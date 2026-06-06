@@ -33,6 +33,7 @@ from src.eval.aggregate import (
 DATASETS = Path(__file__).parent.parent / "datasets"
 GOLDEN_SET = DATASETS / "golden_set.jsonl"
 RUN_PASS = DATASETS / "fixtures" / "run_pass.jsonl"
+RUN_FAIL = DATASETS / "fixtures" / "run_fail.jsonl"
 
 
 # ---------------------------------------------------------------------------
@@ -239,13 +240,16 @@ class TestBuckets:
         expected = {b.value for b in Bucket}
         assert set(scorecard_run_pass.buckets.keys()) == expected
 
-    def test_bucket_values_are_floats(self, scorecard_run_pass: Scorecard) -> None:
+    def test_bucket_values_are_float_or_none(self, scorecard_run_pass: Scorecard) -> None:
         for bucket, rate in scorecard_run_pass.buckets.items():
-            assert isinstance(rate, float), f"bucket '{bucket}' rate is not float: {rate!r}"
+            assert rate is None or isinstance(rate, float), (
+                f"bucket '{bucket}' rate is not float or None: {rate!r}"
+            )
 
     def test_bucket_values_in_0_1_range(self, scorecard_run_pass: Scorecard) -> None:
         for bucket, rate in scorecard_run_pass.buckets.items():
-            assert 0.0 <= rate <= 1.0, f"bucket '{bucket}' rate={rate} out of [0,1]"
+            if rate is not None:
+                assert 0.0 <= rate <= 1.0, f"bucket '{bucket}' rate={rate} out of [0,1]"
 
     def test_factual_lookup_all_pass(self, scorecard_run_pass: Scorecard) -> None:
         assert scorecard_run_pass.buckets["factual_lookup"] == pytest.approx(1.0)
@@ -262,13 +266,24 @@ class TestBuckets:
     def test_multi_source_all_pass(self, scorecard_run_pass: Scorecard) -> None:
         assert scorecard_run_pass.buckets["multi_source"] == pytest.approx(1.0)
 
-    def test_long_context_partial_pass(self, scorecard_run_pass: Scorecard) -> None:
-        # 2/3 pass in long_context bucket
-        assert scorecard_run_pass.buckets["long_context"] == pytest.approx(2 / 3, abs=0.01)
+    def test_long_context_all_pass(self, scorecard_run_pass: Scorecard) -> None:
+        # All 3 long_context items pass their gate metrics in run_pass.
+        # Previously asserted 2/3 — that was a bug: context_recall below its soft
+        # threshold was incorrectly counted as a hard gate failure.
+        assert scorecard_run_pass.buckets["long_context"] == pytest.approx(1.0)
 
-    def test_temporal_partial_pass(self, scorecard_run_pass: Scorecard) -> None:
-        # 1/3 pass in temporal bucket
-        assert scorecard_run_pass.buckets["temporal"] == pytest.approx(1 / 3, abs=0.01)
+    def test_temporal_all_pass(self, scorecard_run_pass: Scorecard) -> None:
+        # All 3 temporal items pass their gate metrics in run_pass.
+        # Previously asserted 1/3 — that was a bug: context_precision/context_recall
+        # below their soft thresholds were incorrectly counted as hard gate failures.
+        assert scorecard_run_pass.buckets["temporal"] == pytest.approx(1.0)
+
+    def test_all_7_buckets_pass_in_run_pass(self, scorecard_run_pass: Scorecard) -> None:
+        """Money-shot: every bucket must be 1.0 for the run_pass fixture."""
+        for bucket, rate in scorecard_run_pass.buckets.items():
+            assert rate == pytest.approx(1.0), (
+                f"bucket '{bucket}' expected 1.0 but got {rate} in run_pass"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -298,6 +313,109 @@ class TestMetricSummary:
         self, scorecard_run_pass: Scorecard
     ) -> None:
         assert scorecard_run_pass.metric_summary.get("injection_resistance") is None
+
+
+# ---------------------------------------------------------------------------
+# run_fail fixture — defect buckets should be < 1.0; clean buckets stay 1.0
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def scorecard_run_fail() -> Scorecard:
+    goldens = load_goldens(GOLDEN_SET)
+    records = load_replay(RUN_FAIL)
+    prog_results = score_programmatic(records, goldens)
+    return build_scorecard(
+        records,
+        goldens,
+        prog_results=prog_results,
+        judge_results=None,
+        robustness_results=None,
+        run_id="run_fail_test",
+        mode="replay",
+    )
+
+
+class TestRunFailBuckets:
+    def test_factual_lookup_has_failures(self, scorecard_run_fail: Scorecard) -> None:
+        # fact-001 and fact-002 fail citation_validity; fact-003 passes → 1/3
+        rate = scorecard_run_fail.buckets["factual_lookup"]
+        assert rate is not None
+        assert rate < 1.0
+        assert rate == pytest.approx(1 / 3, abs=0.01)
+
+    def test_temporal_has_failures(self, scorecard_run_fail: Scorecard) -> None:
+        # temp-001 fails numerical_exactness + temporal_correctness → 2/3 pass
+        rate = scorecard_run_fail.buckets["temporal"]
+        assert rate is not None
+        assert rate < 1.0
+        assert rate == pytest.approx(2 / 3, abs=0.01)
+
+    def test_negative_has_failures(self, scorecard_run_fail: Scorecard) -> None:
+        # neg-001 fails citation_validity + negative_rejection → 2/3 pass
+        rate = scorecard_run_fail.buckets["negative"]
+        assert rate is not None
+        assert rate < 1.0
+        assert rate == pytest.approx(2 / 3, abs=0.01)
+
+    def test_multi_source_has_failures(self, scorecard_run_fail: Scorecard) -> None:
+        # multi-001 fails citation_validity → 2/3 pass
+        rate = scorecard_run_fail.buckets["multi_source"]
+        assert rate is not None
+        assert rate < 1.0
+        assert rate == pytest.approx(2 / 3, abs=0.01)
+
+    def test_long_context_has_failures(self, scorecard_run_fail: Scorecard) -> None:
+        # long-003 fails citation_validity → 2/3 pass
+        rate = scorecard_run_fail.buckets["long_context"]
+        assert rate is not None
+        assert rate < 1.0
+        assert rate == pytest.approx(2 / 3, abs=0.01)
+
+    def test_entity_all_pass_in_run_fail(self, scorecard_run_fail: Scorecard) -> None:
+        # entity items have no planted gate defects → all 3 pass
+        assert scorecard_run_fail.buckets["entity"] == pytest.approx(1.0)
+
+    def test_adversarial_all_pass_in_run_fail(self, scorecard_run_fail: Scorecard) -> None:
+        # adversarial items have no planted gate defects → all 3 pass
+        assert scorecard_run_fail.buckets["adversarial"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Empty bucket — bucket absent from the run → None (not 0.0)
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyBucket:
+    def test_empty_bucket_is_none(self) -> None:
+        """A bucket with zero items in a run must be None, not 0.0."""
+        import json
+        from src.eval.runner import RunRecord
+
+        goldens = load_goldens(GOLDEN_SET)
+
+        # Build records that omit the "adversarial" bucket entirely.
+        records_all = load_replay(RUN_PASS)
+        records_no_adv = [r for r in records_all if r.bucket != "adversarial"]
+
+        prog_results = score_programmatic(records_no_adv, goldens)
+        sc = build_scorecard(
+            records_no_adv,
+            goldens,
+            prog_results=prog_results,
+            run_id="empty-bucket-test",
+            mode="replay",
+        )
+
+        assert sc.buckets["adversarial"] is None, (
+            f"Expected None for empty bucket, got {sc.buckets['adversarial']!r}"
+        )
+        # Other buckets should still be float
+        for bucket, rate in sc.buckets.items():
+            if bucket != "adversarial":
+                assert isinstance(rate, float), (
+                    f"Non-empty bucket '{bucket}' should be float, got {rate!r}"
+                )
 
 
 # ---------------------------------------------------------------------------

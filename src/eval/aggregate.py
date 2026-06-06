@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from src.config import DIMENSION_WEIGHTS
-from src.eval.golden import GoldenItem
+from src.eval.golden import Bucket, GoldenItem
 from src.eval.metrics.programmatic import (
     MetricResult,
     aggregate_metric,
@@ -85,6 +85,15 @@ _RATE_METRICS: frozenset[str] = frozenset({
     "consistency_passk",
 })
 
+# Soft retrieval metrics — continuous scores used for retrieval_quality dimension
+# but NOT treated as hard per-item gates for bucket pass-rate computation.
+# Including them in the per-item all(...) check wrongly fails items when their
+# threshold (0.85 / 0.90) is not met, even though all real gates passed.
+_SOFT_RETRIEVAL_METRICS: frozenset[str] = frozenset({
+    "context_precision",
+    "context_recall",
+})
+
 # Status thresholds (score in 0-100).
 _GREEN_THRESHOLD = 90.0
 _YELLOW_THRESHOLD = 70.0
@@ -121,7 +130,7 @@ class Scorecard:
     run_id: str
     mode: str
     dimensions: list[Dimension]
-    buckets: dict[str, float]            # bucket_name → pass_rate 0-1
+    buckets: dict[str, float | None]     # bucket_name → pass_rate 0-1, or None if no items
     overall: float | None                # weighted mean over non-NA dims, None if all NA
     metric_summary: dict[str, float | None]  # every metric → aggregate value or None
     status: str = "PENDING"
@@ -264,19 +273,25 @@ def build_scorecard(
 
     bucket_passes: dict[str, list[bool]] = defaultdict(list)
     for item_id, bucket in item_bucket.items():
-        applicable = [mr for mr in item_results[item_id] if mr.applicable]
+        # Only count true gate metrics — exclude soft retrieval metrics
+        # (context_precision, context_recall) whose per-item .passed reflects
+        # a continuous threshold, not a real binary gate.
+        applicable = [
+            mr for mr in item_results[item_id]
+            if mr.applicable and mr.metric not in _SOFT_RETRIEVAL_METRICS
+        ]
         item_passed = all(mr.passed for mr in applicable) if applicable else True
         bucket_passes[bucket].append(item_passed)
 
-    # Ensure all 7 buckets appear (even if no records for a bucket in this run).
-    from src.eval.golden import Bucket
-    buckets: dict[str, float] = {}
+    # Ensure all 7 buckets appear in canonical Bucket enum order.
+    # Empty bucket (zero items in this run) → None, not 0.0.
+    buckets: dict[str, float | None] = {}
     for b in Bucket:
         passes_list = bucket_passes.get(b.value, [])
         if passes_list:
             buckets[b.value] = float(sum(passes_list) / len(passes_list))
         else:
-            buckets[b.value] = 0.0
+            buckets[b.value] = None
 
     return Scorecard(
         run_id=run_id,

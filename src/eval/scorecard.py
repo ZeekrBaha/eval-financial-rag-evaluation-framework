@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from src.eval.aggregate import Dimension, Scorecard
+from src.eval.golden import Bucket
 
 # ---------------------------------------------------------------------------
 # Design-system tokens
@@ -179,7 +180,7 @@ def render_text(scorecard: Scorecard) -> str:
     lines.append("  " + "─" * (width - 2))
 
     for d in scorecard.dimensions:
-        emoji = _DIM_STATUS_EMOJI[d.status]
+        emoji = _DIM_STATUS_EMOJI.get(d.status, "⚪")
         score_str = _fmt_score(d.score)
         row = (
             f"  {emoji}  {d.name:<28} {d.weight:>6}  {score_str:>6}  {d.status:<8}"
@@ -188,11 +189,12 @@ def render_text(scorecard: Scorecard) -> str:
 
     lines.append(sep)
 
-    # Buckets
+    # Buckets — rendered in canonical Bucket enum order
     lines.append("  Buckets (item pass-rate):")
     bucket_parts = []
-    for bucket, rate in sorted(scorecard.buckets.items()):
-        bucket_parts.append(f"{bucket}: {_fmt_rate(rate)}")
+    for b in Bucket:
+        rate = scorecard.buckets.get(b.value)
+        bucket_parts.append(f"{b.value}: {_fmt_rate(rate)}")
     # Wrap into lines of ~width
     bucket_line = "  " + "   ".join(bucket_parts)
     lines.append(bucket_line)
@@ -214,8 +216,8 @@ def render_text(scorecard: Scorecard) -> str:
 
 def _html_dim_row(d: Dimension) -> str:
     """Return a <tr> for one dimension."""
-    emoji = _DIM_STATUS_EMOJI[d.status]
-    color = _DIM_STATUS_COLOR[d.status]
+    emoji = _DIM_STATUS_EMOJI.get(d.status, "⚪")
+    color = _DIM_STATUS_COLOR.get(d.status, _COLOR_NA)
     score_cell = (
         f'<span style="font-family:{_FONT_MONO}">{_fmt_score(d.score)}</span>'
     )
@@ -231,12 +233,14 @@ def _html_dim_row(d: Dimension) -> str:
     )
 
 
-def _html_bucket_rows(buckets: dict[str, float]) -> str:
+def _html_bucket_rows(buckets: dict[str, float | None]) -> str:
     rows: list[str] = []
-    for bucket, rate in sorted(buckets.items()):
+    # Render in canonical Bucket enum order; None values display as "—"
+    for b in Bucket:
+        rate = buckets.get(b.value)
         pct_str = f'<span style="font-family:{_FONT_MONO}">{_fmt_rate(rate)}</span>'
         rows.append(
-            f"<tr><td>{bucket}</td><td style='text-align:right'>{pct_str}</td></tr>"
+            f"<tr><td>{b.value}</td><td style='text-align:right'>{pct_str}</td></tr>"
         )
     return "\n".join(rows)
 
