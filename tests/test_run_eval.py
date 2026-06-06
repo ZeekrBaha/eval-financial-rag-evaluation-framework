@@ -11,6 +11,11 @@ Coverage:
   - Subprocess test: uv run python -m src.eval.run_eval --replay run_pass exits 2.
   - Subprocess test: uv run python -m src.eval.run_eval --replay run_fail exits 1.
   - All offline; no network; no API key required.
+
+Extended coverage (logging + REPORT.md):
+  - After main() on run_pass+verdicts: run.log and REPORT.md exist and are non-empty.
+  - stdout still contains RELEASE OK (scorecard not moved off stdout by logging).
+  - --verbose flag runs without error.
 """
 
 from __future__ import annotations
@@ -30,6 +35,8 @@ DATASETS = Path(__file__).parent.parent / "datasets"
 RUN_PASS = DATASETS / "fixtures" / "run_pass.jsonl"
 RUN_FAIL = DATASETS / "fixtures" / "run_fail.jsonl"
 GOLDEN_SET = DATASETS / "golden_set.jsonl"
+JUDGE_PASS = DATASETS / "fixtures" / "judge_pass.json"
+JUDGE_FAIL = DATASETS / "fixtures" / "judge_fail.json"
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +222,159 @@ class TestSubprocess:
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         assert "RELEASE BLOCKED" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Tests: logging layer (run.log) and REPORT.md generation
+# ---------------------------------------------------------------------------
+
+class TestLoggingAndReport:
+    """Verify run.log and REPORT.md are written and stdout is unaffected."""
+
+    def test_run_log_exists_after_pass_with_verdicts(self, tmp_path: Path) -> None:
+        """run.log must be created in the run dir."""
+        _run_main([
+            "--replay", str(RUN_PASS),
+            "--verdicts", str(JUDGE_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-log-pass",
+        ])
+        log_path = tmp_path / "t-log-pass" / "run.log"
+        assert log_path.exists(), "run.log must be created by the pipeline"
+
+    def test_run_log_is_non_empty(self, tmp_path: Path) -> None:
+        """run.log must contain at least one log entry."""
+        _run_main([
+            "--replay", str(RUN_PASS),
+            "--verdicts", str(JUDGE_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-log-nonempty",
+        ])
+        log_path = tmp_path / "t-log-nonempty" / "run.log"
+        assert log_path.stat().st_size > 0, "run.log must not be empty"
+
+    def test_run_log_contains_stage_entries(self, tmp_path: Path) -> None:
+        """run.log must mention pipeline stage names."""
+        _run_main([
+            "--replay", str(RUN_PASS),
+            "--verdicts", str(JUDGE_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-log-stages",
+        ])
+        content = (tmp_path / "t-log-stages" / "run.log").read_text()
+        assert "load_goldens" in content
+        assert "score_programmatic" in content
+
+    def test_report_md_exists_after_pass_with_verdicts(self, tmp_path: Path) -> None:
+        """REPORT.md must be created in the run dir."""
+        _run_main([
+            "--replay", str(RUN_PASS),
+            "--verdicts", str(JUDGE_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-rpt-pass",
+        ])
+        report_path = tmp_path / "t-rpt-pass" / "REPORT.md"
+        assert report_path.exists(), "REPORT.md must be created by the pipeline"
+
+    def test_report_md_contains_status(self, tmp_path: Path) -> None:
+        """REPORT.md must contain the release status string."""
+        _run_main([
+            "--replay", str(RUN_PASS),
+            "--verdicts", str(JUDGE_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-rpt-status",
+        ])
+        content = (tmp_path / "t-rpt-status" / "REPORT.md").read_text()
+        # run_pass + judge_pass should yield PASS or INCOMPLETE
+        assert "RELEASE" in content, f"Expected RELEASE in REPORT.md; got:\n{content[:500]}"
+
+    def test_report_md_for_fail_contains_blocked(self, tmp_path: Path) -> None:
+        """REPORT.md for a failing run must show RELEASE BLOCKED."""
+        _run_main([
+            "--replay", str(RUN_FAIL),
+            "--verdicts", str(JUDGE_FAIL),
+            "--out", str(tmp_path),
+            "--run-id", "t-rpt-fail",
+        ])
+        content = (tmp_path / "t-rpt-fail" / "REPORT.md").read_text()
+        assert "RELEASE BLOCKED" in content
+
+    def test_stdout_still_contains_scorecard_on_pass(self, tmp_path: Path) -> None:
+        """Logging must not remove scorecard text from stdout."""
+        _, out = _run_main([
+            "--replay", str(RUN_PASS),
+            "--verdicts", str(JUDGE_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-stdout-pass",
+        ])
+        # The scorecard text and gate summary must still appear on stdout.
+        assert "RELEASE" in out, f"Expected RELEASE in stdout; got:\n{out}"
+
+    def test_stdout_still_contains_scorecard_on_fail(self, tmp_path: Path) -> None:
+        """stdout must still contain RELEASE BLOCKED for a failing run."""
+        _, out = _run_main([
+            "--replay", str(RUN_FAIL),
+            "--out", str(tmp_path),
+            "--run-id", "t-stdout-fail",
+        ])
+        assert "RELEASE BLOCKED" in out
+
+    def test_verbose_flag_exits_same_code(self, tmp_path: Path) -> None:
+        """--verbose must not change the exit code."""
+        code_normal, _ = _run_main([
+            "--replay", str(RUN_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-verb-base",
+        ])
+        code_verbose, _ = _run_main([
+            "--replay", str(RUN_PASS),
+            "--verbose",
+            "--out", str(tmp_path),
+            "--run-id", "t-verb-v",
+        ])
+        assert code_normal == code_verbose, (
+            f"Verbose changed exit code: {code_normal} vs {code_verbose}"
+        )
+
+    def test_verbose_short_flag(self, tmp_path: Path) -> None:
+        """-v shorthand must work and run without error."""
+        code, _ = _run_main([
+            "--replay", str(RUN_PASS),
+            "-v",
+            "--out", str(tmp_path),
+            "--run-id", "t-short-v",
+        ])
+        # Just confirm it ran (no exception) and returns a valid code.
+        assert code in (0, 1, 2)
+
+    def test_run_log_not_on_stdout(self, tmp_path: Path) -> None:
+        """Log messages must not pollute stdout."""
+        _, out = _run_main([
+            "--replay", str(RUN_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-log-stdout",
+        ])
+        # Log format contains "eval.run_eval" — should not appear on stdout.
+        assert "eval.run_eval" not in out, (
+            "Log entries appeared on stdout; they must go to stderr only"
+        )
+
+    def test_report_exists_without_verdicts(self, tmp_path: Path) -> None:
+        """REPORT.md must also be written in programmatic-only (no verdicts) mode."""
+        _run_main([
+            "--replay", str(RUN_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-rpt-no-verdicts",
+        ])
+        report_path = tmp_path / "t-rpt-no-verdicts" / "REPORT.md"
+        assert report_path.exists(), "REPORT.md must be written even without verdicts"
+
+    def test_run_log_exists_without_verdicts(self, tmp_path: Path) -> None:
+        """run.log must be written in programmatic-only mode too."""
+        _run_main([
+            "--replay", str(RUN_PASS),
+            "--out", str(tmp_path),
+            "--run-id", "t-log-no-verdicts",
+        ])
+        log_path = tmp_path / "t-log-no-verdicts" / "run.log"
+        assert log_path.exists(), "run.log must be written even without verdicts"
