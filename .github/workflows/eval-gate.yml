@@ -1,0 +1,40 @@
+name: eval-gate
+
+# Offline evaluation gate — runs with NO secrets and NO network.
+# Lint + types + the full offline test suite + the release-gate pipeline.
+# A hard-gate failure in `make eval` exits non-zero and fails the build.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  offline-eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync dependencies (locked)
+        run: uv sync --frozen
+
+      - name: Lint (ruff)
+        run: uv run ruff check src tests
+
+      - name: Type check (mypy)
+        run: uv run mypy src
+
+      - name: Test suite (offline, no secrets)
+        run: uv run pytest -q
+
+      - name: Release gate — full hard-gate evaluation (must PASS)
+        run: make eval
+
+      - name: Show the BLOCKED money-shot (informational)
+        run: make demo-block
