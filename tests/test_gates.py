@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from src.eval.aggregate import Dimension, Scorecard, build_scorecard
-from src.eval.gates import GateOutcome, GateResult, enforce, evaluate_gates
+from src.eval.gates import GateOutcome, enforce, evaluate_gates
 from src.eval.golden import load_goldens
 from src.eval.metrics.programmatic import score_programmatic
 from src.eval.runner import load_replay

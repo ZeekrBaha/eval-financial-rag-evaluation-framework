@@ -25,7 +25,6 @@ from src.eval.golden import GoldenItem, Bucket
 from src.eval.runner import RunRecord, RetrievedRef, load_replay
 from src.eval.metrics.judge import score_judge
 from src.eval.metrics.programmatic import (
-    MetricResult,
     aggregate_metric,
 )
 

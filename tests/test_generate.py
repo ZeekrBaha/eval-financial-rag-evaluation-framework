@@ -8,9 +8,7 @@ Stub providers are injected wherever deterministic output is needed.
 
 from __future__ import annotations
 
-import re
 
-import pytest
 
 from src.sut.ingest import Chunk
 from src.sut.generate import Answer, answer_question

@@ -21,7 +21,6 @@ import sys
 from io import StringIO
 from pathlib import Path
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Fixture paths

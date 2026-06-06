@@ -211,7 +211,7 @@ class TestNAHandling:
 
     def test_all_na_overall_is_none(self) -> None:
         """When all dimensions are NA, overall must be None."""
-        from src.eval.aggregate import Dimension, Scorecard
+        from src.eval.aggregate import Scorecard
         from src.config import DIMENSION_WEIGHTS
 
         na_dims = [
@@ -389,8 +389,6 @@ class TestRunFailBuckets:
 class TestEmptyBucket:
     def test_empty_bucket_is_none(self) -> None:
         """A bucket with zero items in a run must be None, not 0.0."""
-        import json
-        from src.eval.runner import RunRecord
 
         goldens = load_goldens(GOLDEN_SET)
 

@@ -5,9 +5,7 @@ TDD order: these tests are written BEFORE the implementation.
 All offline tests must pass without network access and without openai installed.
 """
 
-import importlib
 import math
-import os
 import sys
 from pathlib import Path
 

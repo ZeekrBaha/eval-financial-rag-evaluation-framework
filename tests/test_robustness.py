@@ -26,7 +26,6 @@ from src.eval.metrics.robustness import (
 )
 from src.eval.metrics.programmatic import (
     MetricResult,
-    aggregate_metric,
     metric_rate,
 )
 

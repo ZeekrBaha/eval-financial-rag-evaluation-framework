@@ -1,7 +1,6 @@
 """Tests for the golden set loader (T7 / E-01)."""
 
 import json
-import textwrap
 from pathlib import Path
 
 import pytest
