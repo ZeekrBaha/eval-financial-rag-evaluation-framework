@@ -1,25 +1,35 @@
-.PHONY: ingest run score eval demo-block test
+.PHONY: ingest run score eval eval-incomplete demo-block test
 
-# Replay fixture to use for `make eval` (override on command line if needed).
-# Default → run_pass.jsonl so `make eval` exits 0 in CI.
+# Replay + judge-verdict fixtures for `make eval` (override on command line).
+# Defaults → run_pass + judge_pass so the full hard-gate decision is PASS (exit 0).
 REPLAY ?= datasets/fixtures/run_pass.jsonl
+VERDICTS ?= datasets/fixtures/judge_pass.json
 
 # ---------------------------------------------------------------------------
 # eval / score — offline replay, no API key required.
-# Default fixture (run_pass) exits 0; swap REPLAY= to run_fail for a 1.
+# Programmatic + robustness + judge (recorded verdicts) → all 4 hard gates
+# evaluated. Default (run_pass + judge_pass) → RELEASE OK, exit 0.
 # ---------------------------------------------------------------------------
 eval:
-	uv run python -m src.eval.run_eval --replay $(REPLAY)
+	uv run python -m src.eval.run_eval --replay $(REPLAY) --verdicts $(VERDICTS)
 
 # score is an alias for eval (same pipeline)
 score: eval
 
 # ---------------------------------------------------------------------------
-# demo-block — run the failing fixture to show the RELEASE BLOCKED money-shot.
-# Non-zero exit is expected here; prefix with - so make itself does not error.
+# demo-block — failing fixtures show the RELEASE BLOCKED money-shot.
+# Non-zero exit (1) is expected; prefix with - so make itself does not error.
 # ---------------------------------------------------------------------------
 demo-block:
-	-uv run python -m src.eval.run_eval --replay datasets/fixtures/run_fail.jsonl
+	-uv run python -m src.eval.run_eval --replay datasets/fixtures/run_fail.jsonl --verdicts datasets/fixtures/judge_fail.json
+
+# ---------------------------------------------------------------------------
+# eval-incomplete — programmatic-only (no judge verdicts): the honest partial
+# path. faithfulness/hallucination/advice stay UNEVALUATED → RELEASE INCOMPLETE
+# (exit 2). Demonstrates that a high programmatic score cannot certify release.
+# ---------------------------------------------------------------------------
+eval-incomplete:
+	-uv run python -m src.eval.run_eval --replay datasets/fixtures/run_pass.jsonl
 
 # ---------------------------------------------------------------------------
 # ingest / run — live paths; require OPENAI_API_KEY + network access.

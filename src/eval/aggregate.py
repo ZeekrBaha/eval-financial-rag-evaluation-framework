@@ -28,7 +28,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Literal
 
-from src.config import DIMENSION_WEIGHTS
+from src.config import DIMENSION_WEIGHTS, HARD_GATES, SOFT_GATES
 from src.eval.golden import Bucket, GoldenItem
 from src.eval.metrics.programmatic import (
     MetricResult,
@@ -67,11 +67,16 @@ METRIC_DIMENSION: dict[str, str] = {
 }
 
 # Metrics where we use aggregate_metric (mean score, continuous 0-1).
+# Note: hallucination_rate is score-style where each per-item score is the
+# hallucinated flag (1.0/0.0), so the mean == the hallucination RATE that the
+# hard gate (<= 0.01) checks. answer_relevance is a continuous judge score.
 _SCORE_METRICS: frozenset[str] = frozenset({
     "faithfulness",
     "citation_validity",
     "context_recall",
     "context_precision",
+    "answer_relevance",
+    "hallucination_rate",
 })
 
 # Metrics where we use metric_rate (fraction passed, 0-1).
@@ -210,7 +215,16 @@ def build_scorecard(
         all_results.extend(robustness_results)
 
     # --- metric_summary: every known metric → its aggregate value or None ---
-    all_metric_names: list[str] = list(METRIC_DIMENSION.keys())
+    # Cover the union of dimension metrics AND all gate metrics (HARD + SOFT),
+    # so gate enforcement (T14) can read every gate's value — including
+    # hallucination_rate and answer_relevance, which are gate-only (not mapped
+    # to a display dimension) and would otherwise be missing.
+    gate_metric_names = {g["metric"] for g in HARD_GATES} | {
+        g["metric"] for g in SOFT_GATES
+    }
+    all_metric_names: list[str] = sorted(
+        set(METRIC_DIMENSION.keys()) | gate_metric_names
+    )
     metric_summary: dict[str, float | None] = {
         m: _get_metric_value(all_results, m) for m in all_metric_names
     }

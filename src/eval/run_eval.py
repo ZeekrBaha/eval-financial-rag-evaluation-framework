@@ -48,6 +48,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--verdicts",
+        default=None,
+        help=(
+            "Path to recorded judge verdicts JSON (offline replay mode). When "
+            "provided, the judge metrics (faithfulness, hallucination_rate, "
+            "answer_relevance) are evaluated from the fixture, enabling a full "
+            "hard-gate decision. When omitted, those gates stay UNEVALUATED and "
+            "the run is reported INCOMPLETE (the honest partial path)."
+        ),
+    )
+    p.add_argument(
         "--live",
         action="store_true",
         help=(
@@ -79,15 +90,24 @@ def _replay_pipeline(
     replay_path: str,
     out_dir: Path,
     run_id: str,
+    verdicts_path: str | None = None,
 ) -> int:
     """Offline replay pipeline — no network, no API key.
+
+    Scores programmatic + robustness metrics always; adds judge metrics from a
+    recorded verdicts fixture when *verdicts_path* is given. With verdicts, all
+    four hard gates can be evaluated (→ PASS/BLOCKED); without, faithfulness and
+    hallucination_rate stay unevaluated (→ INCOMPLETE), which is the honest
+    partial path.
 
     Returns exit code (0 = PASS, 1 = BLOCKED, 2 = INCOMPLETE).
     """
     from src.eval.aggregate import build_scorecard
     from src.eval.gates import enforce
     from src.eval.golden import load_goldens
+    from src.eval.metrics.judge import score_judge
     from src.eval.metrics.programmatic import score_programmatic
+    from src.eval.metrics.robustness import score_robustness
     from src.eval.runner import load_replay
     from src.eval.scorecard import render_html, render_json, render_text
 
@@ -95,14 +115,22 @@ def _replay_pipeline(
     goldens = load_goldens(golden_path)
     records = load_replay(replay_path)
 
-    # 2. Score
+    # 2. Score — programmatic + robustness always; judge only with verdicts.
     prog = score_programmatic(records, goldens)
+    rob = score_robustness(records, goldens)
+    judge = None
+    if verdicts_path is not None:
+        judge = score_judge(
+            records, goldens, mode="offline", verdicts_path=verdicts_path
+        )
 
     # 3. Aggregate
     sc = build_scorecard(
         records,
         goldens,
         prog_results=prog,
+        judge_results=judge,
+        robustness_results=rob,
         run_id=run_id,
         mode="replay",
     )
@@ -243,6 +271,7 @@ def main(argv: list[str] | None = None) -> int:
             replay_path=args.replay,
             out_dir=out_dir,
             run_id=run_id,
+            verdicts_path=args.verdicts,
         )
 
 
