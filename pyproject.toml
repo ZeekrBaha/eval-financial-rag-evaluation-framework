@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Financial RAG evaluation framework with hard-gated scorecard"
 requires-python = ">=3.12"
 dependencies = [
-    "llama-index",
     "chromadb",
     "fastapi",
     "uvicorn",

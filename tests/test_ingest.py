@@ -267,6 +267,94 @@ class TestIngestFixture:
 
 
 # ---------------------------------------------------------------------------
+# Section-aware chunking (new tests — T3 spec fix)
+# ---------------------------------------------------------------------------
+
+# A filing text with two recognisable ITEM headers plus body content.
+_SECTIONED_TEXT = (
+    "Some preamble before any item.\n\n"
+    "Item 1. Business.\n\n"
+    + "The company operates in many markets. " * 5 + "\n\n"
+    "Item 7. Management's Discussion and Analysis.\n\n"
+    + "Revenue grew significantly year over year. " * 5
+)
+
+_SECTIONED_META = {
+    "issuer": "AAPL",
+    "form": "10-K",
+    "filing_date": "2023-09-30",
+    "accession": "AAPL-10K-2023",
+    "section": "full",
+    "source_url": "https://sec.gov/test",
+}
+
+
+class TestSectionAwareChunking:
+    def test_sections_detected_from_item_headers(self) -> None:
+        """Chunks from Item 1 and Item 7 sections carry correct section slugs."""
+        chunks = parse_and_chunk(_SECTIONED_TEXT, _SECTIONED_META)
+        sections_found = {c.section for c in chunks}
+        assert "item1" in sections_found, "expected item1 slug"
+        assert "item7" in sections_found, "expected item7 slug"
+
+    def test_chunk_ids_include_section_slug(self) -> None:
+        """chunk_id must embed the section slug (e.g. AAPL-10K-2023#item7#0)."""
+        chunks = parse_and_chunk(_SECTIONED_TEXT, _SECTIONED_META)
+        item7_chunks = [c for c in chunks if c.section == "item7"]
+        assert item7_chunks, "no item7 chunks found"
+        for c in item7_chunks:
+            assert "item7" in c.chunk_id, f"item7 not in chunk_id: {c.chunk_id}"
+            assert _SECTIONED_META["accession"] in c.chunk_id
+
+    def test_section_idx_restarts_per_section(self) -> None:
+        """The first chunk of each section has idx 0 (chunk_id ends with #0)."""
+        chunks = parse_and_chunk(_SECTIONED_TEXT, _SECTIONED_META)
+        for slug in ("item1", "item7"):
+            section_chunks = [c for c in chunks if c.section == slug]
+            if section_chunks:
+                assert section_chunks[0].chunk_id.endswith("#0"), (
+                    f"first chunk of {slug} should have idx 0, "
+                    f"got {section_chunks[0].chunk_id}"
+                )
+
+    def test_no_headers_falls_back_to_provided_section(self) -> None:
+        """Text with no ITEM headers uses the meta-provided section slug."""
+        plain_text = "Revenue was $100 billion. Costs were $80 billion."
+        meta = dict(_SAMPLE_META)  # section = "Item 1"
+        chunks = parse_and_chunk(plain_text, meta)
+        assert len(chunks) == 1
+        assert chunks[0].section == meta["section"]
+
+    def test_no_headers_falls_back_to_full_when_section_missing(self) -> None:
+        """Text with no headers and no section in meta falls back to 'full'."""
+        plain_text = "Revenue was $100 billion."
+        meta = {k: v for k, v in _SAMPLE_META.items() if k != "section"}
+        chunks = parse_and_chunk(plain_text, meta)
+        assert chunks[0].section == "full"
+
+
+class TestCrossFilingChunkIdUniqueness:
+    def test_two_different_fixture_files_no_collision(
+        self, tmp_path: Path, poison_network: None
+    ) -> None:
+        """Ingesting two fixture files without explicit accession must not raise."""
+        filing_a = tmp_path / "filing_a.txt"
+        filing_b = tmp_path / "filing_b.txt"
+        filing_a.write_text("Apple revenue was $391 billion in 2024.", encoding="utf-8")
+        filing_b.write_text("Microsoft revenue was $245 billion in 2024.", encoding="utf-8")
+
+        store = VectorStore()
+        # Neither call supplies meta, so accession is derived from filename stem.
+        count_a = ingest_fixture(str(filing_a), store)
+        # Must not raise due to duplicate chunk_ids.
+        count_b = ingest_fixture(str(filing_b), store)
+
+        assert count_a >= 1
+        assert count_b >= 1
+        assert store._collection.count() == count_a + count_b
+
+
+# ---------------------------------------------------------------------------
 # fetch_filing — existence check only (not executed in tests)
 # ---------------------------------------------------------------------------
 

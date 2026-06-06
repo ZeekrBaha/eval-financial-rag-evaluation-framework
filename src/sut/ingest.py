@@ -13,9 +13,15 @@ Each chunk carries all 7 metadata fields:
 
 chunk_id is stable across runs:
     f"{accession}#{section}#{idx}"
+where idx restarts from 0 within each detected section.
 
 Chunking strategy
 -----------------
+Section-aware: detects SEC ITEM headers (e.g. "Item 1A.", "ITEM 7") and splits
+the filing into sections first.  Within each section the existing ~800-word /
+~100-word-overlap window is applied.  Chunks before the first header (or when
+no headers exist) use the meta-provided section (or "full").
+
 ~800 tokens, ~100 token overlap.  We approximate tokens as whitespace-split
 words (1 token ≈ 1 word for English prose, good enough for a ~800-word window).
 No tokenizer dependency is required.
@@ -40,6 +46,7 @@ Usage (live)::
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -95,42 +102,71 @@ class Chunk:
 
 
 # ---------------------------------------------------------------------------
+# SEC section-header detection helpers
+# ---------------------------------------------------------------------------
+
+# Matches lines like "Item 1.", "ITEM 1A.", "Item 7", "ITEM 1A" etc.
+_SEC_ITEM_HEADER_RE = re.compile(
+    r"^\s*ITEM\s+(\d+[A-Z]?)\.?",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _normalize_section_slug(item_label: str) -> str:
+    """Turn a raw ITEM label (e.g. '1A', '7') into a lowercase slug ('item1a', 'item7')."""
+    return "item" + item_label.lower()
+
+
+def _split_into_sections(text: str, fallback_section: str) -> list[tuple[str, str]]:
+    """Detect SEC ITEM headers in *text* and return (section_slug, section_text) pairs.
+
+    If no headers are found, returns a single tuple (fallback_section, text).
+    The text before the first header (if any) is grouped under fallback_section.
+    """
+    matches = list(_SEC_ITEM_HEADER_RE.finditer(text))
+
+    if not matches:
+        return [(fallback_section, text)]
+
+    sections: list[tuple[str, str]] = []
+
+    # Text before the first header → fallback_section
+    preamble = text[: matches[0].start()]
+    if preamble.strip():
+        sections.append((fallback_section, preamble))
+
+    for i, match in enumerate(matches):
+        slug = _normalize_section_slug(match.group(1))
+        section_start = match.start()
+        section_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        section_text = text[section_start:section_end]
+        sections.append((slug, section_text))
+
+    return sections
+
+
+# ---------------------------------------------------------------------------
 # Chunking logic
 # ---------------------------------------------------------------------------
 
 
-def parse_and_chunk(text: str, meta: dict[str, str]) -> list[Chunk]:
-    """Split filing text into overlapping word-window chunks with full metadata.
-
-    Args:
-        text: Raw filing text.
-        meta: Dict with keys: issuer, form, filing_date, accession,
-              section, source_url.  Missing keys fall back to empty string.
-
-    Returns:
-        List of Chunk objects, each carrying all 7 metadata fields.
-    """
-    issuer = meta.get("issuer", "")
-    form = meta.get("form", "")
-    filing_date = meta.get("filing_date", "")
-    accession = meta.get("accession", "")
-    section = meta.get("section", "")
-    source_url = meta.get("source_url", "")
-
-    words = text.split()
-
-    if not words:
-        return []
-
+def _chunk_words(
+    words: list[str],
+    section: str,
+    accession: str,
+    issuer: str,
+    form: str,
+    filing_date: str,
+    source_url: str,
+) -> list[Chunk]:
+    """Apply the ~800-word / ~100-word-overlap window over *words* for a single section."""
     chunks: list[Chunk] = []
     start = 0
     idx = 0
 
     while start < len(words):
         end = min(start + _CHUNK_SIZE_WORDS, len(words))
-        chunk_words = words[start:end]
-        chunk_text = " ".join(chunk_words)
-
+        chunk_text = " ".join(words[start:end])
         chunk_id = f"{accession}#{section}#{idx}"
 
         chunks.append(
@@ -146,10 +182,56 @@ def parse_and_chunk(text: str, meta: dict[str, str]) -> list[Chunk]:
             )
         )
 
-        # Advance by (chunk_size - overlap) so the next chunk re-reads the tail.
         step = _CHUNK_SIZE_WORDS - _CHUNK_OVERLAP_WORDS
         start += step
         idx += 1
+
+    return chunks
+
+
+def parse_and_chunk(text: str, meta: dict[str, str]) -> list[Chunk]:
+    """Split filing text into overlapping word-window chunks with full metadata.
+
+    Detects SEC ITEM headers and splits the filing into sections first.  Within
+    each section the existing ~800-word / ~100-word-overlap window is applied.
+    chunk_id restarts (idx=0) per section.
+
+    Args:
+        text: Raw filing text.
+        meta: Dict with keys: issuer, form, filing_date, accession,
+              section, source_url.  Missing keys fall back to empty string.
+
+    Returns:
+        List of Chunk objects, each carrying all 7 metadata fields.
+    """
+    issuer = meta.get("issuer", "")
+    form = meta.get("form", "")
+    filing_date = meta.get("filing_date", "")
+    accession = meta.get("accession", "")
+    fallback_section = meta.get("section", "") or "full"
+    source_url = meta.get("source_url", "")
+
+    if not text.split():
+        return []
+
+    sections = _split_into_sections(text, fallback_section)
+
+    chunks: list[Chunk] = []
+    for section_slug, section_text in sections:
+        words = section_text.split()
+        if not words:
+            continue
+        chunks.extend(
+            _chunk_words(
+                words=words,
+                section=section_slug,
+                accession=accession,
+                issuer=issuer,
+                form=form,
+                filing_date=filing_date,
+                source_url=source_url,
+            )
+        )
 
     return chunks
 
@@ -203,6 +285,9 @@ def ingest_fixture(
     text = filing_path.read_text(encoding="utf-8")
 
     effective_meta = dict(_DEFAULT_META)
+    # Derive accession from filename stem so fixtures without explicit meta
+    # don't collide in the vector store when multiple fixture files are ingested.
+    effective_meta["accession"] = filing_path.stem
     if meta:
         effective_meta.update(meta)
 
