@@ -8,14 +8,12 @@ All tests run offline — no network, no API key required.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 
 import pytest
 
 from src.eval.golden import Bucket, GoldenItem
 from src.eval.runner import RunRecord, RetrievedRef, load_replay, run_live, write_run
-from src.sut.ingest import ingest_fixture
 from src.sut.store import VectorStore
 
 
@@ -533,7 +531,7 @@ class TestWriteRunRoundtrip:
         records = load_replay(_RUN_PASS)
         out = tmp_path / "run.jsonl"
         write_run(records, out)
-        lines = [l for l in out.read_text().splitlines() if l.strip()]
+        lines = [line_ for line_ in out.read_text().splitlines() if line_.strip()]
         assert len(lines) == len(records)
         for line in lines:
             parsed = json.loads(line)

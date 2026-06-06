@@ -148,9 +148,9 @@ class VectorStore:
 
         self._collection.add(
             ids=ids,
-            embeddings=embeddings,
+            embeddings=embeddings,  # type: ignore[arg-type]
             documents=texts,
-            metadatas=metadatas,
+            metadatas=metadatas,  # type: ignore[arg-type]
         )
 
     # ------------------------------------------------------------------
@@ -177,16 +177,15 @@ class VectorStore:
         query_embedding = self._provider.embed([text])[0]
 
         result = self._collection.query(
-            query_embeddings=[query_embedding],
+            query_embeddings=[query_embedding],  # type: ignore[arg-type]
             n_results=n,
             include=["documents", "metadatas", "distances"],
         )
 
         # result is shaped as {key: [[val, val, ...]]} — the outer list is per
         # query; we only ever send one query, so index 0.
-        ids: list[str] = result["ids"][0]
         documents: list[str] = result["documents"][0]  # type: ignore[index]
-        metadatas: list[dict] = result["metadatas"][0]  # type: ignore[index]
+        metadatas: list[dict[str, str]] = result["metadatas"][0]  # type: ignore[index, assignment]
         distances: list[float] = result["distances"][0]  # type: ignore[index]
 
         retrieved: list[RetrievedChunk] = []

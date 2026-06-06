@@ -24,7 +24,7 @@ import re
 from dataclasses import dataclass
 
 from src.eval.golden import Bucket, GoldenItem
-from src.eval.runner import RunRecord
+from src.eval.runner import RunRecord, RetrievedRef
 
 # ---------------------------------------------------------------------------
 # Result type
@@ -231,7 +231,7 @@ def _distinctive_issuer_token(issuer: str) -> str | None:
     are stripped before choosing the longest remaining token, which serves as the
     distinctive name fragment that must appear in the answer.
     """
-    candidates = [
+    candidates: list[str] = [
         tok
         for tok in re.findall(r"[A-Za-z]+", issuer)
         if tok.lower() not in _GENERIC_ISSUER_SUFFIXES
@@ -602,13 +602,13 @@ def entity_disambiguation(record: RunRecord, golden: GoldenItem) -> MetricResult
     retrieved_map = {ref.chunk_id: ref for ref in record.retrieved}
     wrong_issuer_citations: list[str] = []
     for marker, chunk_id in record.citations.items():
-        ref = retrieved_map.get(chunk_id)
-        if ref is None:
+        cited_ref: RetrievedRef | None = retrieved_map.get(chunk_id)
+        if cited_ref is None:
             wrong_issuer_citations.append(f"{marker}→{chunk_id} not found")
             continue
-        if ref.issuer != correct_issuer:
+        if cited_ref.issuer != correct_issuer:
             wrong_issuer_citations.append(
-                f"{marker}→{chunk_id} issuer={ref.issuer!r} (expected {correct_issuer!r})"
+                f"{marker}→{chunk_id} issuer={cited_ref.issuer!r} (expected {correct_issuer!r})"
             )
 
     cited_from_correct = len(wrong_issuer_citations) == 0

@@ -21,9 +21,12 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from src.config import HARD_GATES, SOFT_GATES
+
+if TYPE_CHECKING:
+    from src.eval.aggregate import Scorecard
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +167,7 @@ def decide_release(
     return "PASS", 0, []
 
 
-def enforce(scorecard: "Scorecard") -> GateOutcome:  # type: ignore[name-defined]
+def enforce(scorecard: "Scorecard") -> GateOutcome:
     """Run gate enforcement and stamp the scorecard.
 
     Evaluates all gates, decides release status, stamps scorecard.status and
@@ -177,7 +180,6 @@ def enforce(scorecard: "Scorecard") -> GateOutcome:  # type: ignore[name-defined
     Returns:
         GateOutcome with full results and summary.
     """
-    from src.eval.aggregate import Scorecard  # local import to avoid circular
 
     hard_results, soft_results = evaluate_gates(scorecard.metric_summary)
     status, exit_code, blocking_failures = decide_release(hard_results)

@@ -8,6 +8,7 @@ All tests are fully offline — ephemeral Chroma, OfflineProvider for embeddings
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 
 from src.sut.ingest import Chunk
 from src.sut.store import VectorStore, RetrievedChunk
@@ -287,7 +288,6 @@ class TestQueryOrdering:
 
 class TestVectorStorePersistPath:
     def test_persistent_path_construction(self, tmp_path: "Path") -> None:
-        from pathlib import Path
         store = VectorStore(persist_path=str(tmp_path / "chroma_db"))
         store.add([_make_chunk()])
         results = store.query("revenue", k=1)

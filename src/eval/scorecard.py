@@ -20,7 +20,6 @@ Accessibility requirement (E-08):
 from __future__ import annotations
 
 import json
-import math
 from pathlib import Path
 from typing import Any
 
@@ -167,8 +166,6 @@ def render_text(scorecard: Scorecard) -> str:
     lines: list[str] = []
     width = 70
     sep = "─" * width
-
-    status_color = _STATUS_COLOR.get(scorecard.status, _COLOR_NA)
 
     lines.append(sep)
     lines.append(f"  STATUS: {scorecard.status}   run={scorecard.run_id}   mode={scorecard.mode}")

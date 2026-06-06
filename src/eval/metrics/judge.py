@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from src.eval.golden import GoldenItem
 from src.eval.runner import RunRecord
@@ -57,7 +58,7 @@ _ANSWER_RELEVANCE_PASS = 0.90  # SOFT gate: mean answer_relevance ≥0.90
 def _score_offline(
     records: list[RunRecord],
     goldens: list[GoldenItem],  # noqa: ARG001 — kept for API symmetry with live
-    verdicts: dict[str, dict],
+    verdicts: dict[str, dict[str, Any]],
 ) -> list[MetricResult]:
     """Emit 3 MetricResults per record from a pre-loaded verdict dict."""
     results: list[MetricResult] = []
@@ -152,10 +153,8 @@ def _score_live(
         ) from exc
 
     results: list[MetricResult] = []
-    golden_map: dict[str, GoldenItem] = {g.id: g for g in goldens}
 
     for record in records:
-        golden = golden_map.get(record.id)
         context = "\n".join(ref.text for ref in record.retrieved)
 
         # Prompt the judge model to evaluate faithfulness, answer relevance,
@@ -265,7 +264,7 @@ def score_judge(
             )
         path = Path(verdicts_path)
         try:
-            verdicts: dict[str, dict] = json.loads(path.read_text())
+            verdicts: dict[str, dict[str, Any]] = json.loads(path.read_text())
         except FileNotFoundError as exc:
             raise FileNotFoundError(
                 f"Verdict fixture not found at {path}. "

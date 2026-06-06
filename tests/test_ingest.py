@@ -434,7 +434,6 @@ class TestTOCRejection:
             "Item 2. Properties.\n\n"       # real body header
             "The company owns its headquarters building.\n"
         )
-        meta = dict(_TOC_FILING_META)
         from src.sut.ingest import _split_into_sections
         sections = _split_into_sections(text, "full")
         slugs = [slug for slug, _ in sections]
