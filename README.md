@@ -5,10 +5,11 @@
 > exact (numbers, citations, refusals) plus an **LLM-as-judge that is itself calibrated** against
 > human labels — and **blocks release** when a hard gate fails.
 
-> **Status:** spec complete (`docs/implementation/`), implementation in progress. Sections marked
-> _(target)_ describe intended behavior to be filled with real numbers after the first run — they
-> are **not** fabricated results. The honesty rule of the whole project: never report a number we
-> haven't measured.
+> **Status:** offline pipeline complete and verified — `make eval` (PASS), `make demo-block`
+> (BLOCKED), `make eval-incomplete` (INCOMPLETE) all run with no key/network; 472 tests pass,
+> ruff + mypy clean. Live mode (real SEC ingest + live LLM judge) is implemented but optional.
+> A few items remain `_(target)_`: judge calibration (κ, a separate project), volume-synthesis,
+> and the Streamlit dashboard. Honesty rule: no number appears here unless it was measured.
 
 > **What this is (and isn't):** a *designed case study* in evaluating a regulated-finance RAG
 > product (inspired by public descriptions of Moody's Research Assistant). **Public data only.**
@@ -138,34 +139,51 @@ that calibration lands, **the faithfulness number is reported as a hypothesis, n
 
 ---
 
-## 6. The findings _(target — populated after first run)_
+## 6. The release decision (real output)
 
-The whole framework exists to produce a **release decision**. The money shot:
+The whole framework exists to produce a **release decision**. Three outcomes, three exit
+codes. This is real `make demo-block` output (the failing replay + recorded judge verdicts):
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║  FINANCIAL RAG — EVALUATION SCORECARD          run <date>     ║
-╠══════════════════════════════════════════════════════════════╣
-║  STATUS:  ⛔ RELEASE BLOCKED                                  ║
-║  REASON:  citation_validity 0.94 < 0.95 (hard gate)          ║
-╠════════════════════════════════════╦═════════╦═══════╦═══════╣
-║  Faithfulness & Grounding          ║   25%   ║  96   ║  🟢   ║
-║  Retrieval Quality                 ║   20%   ║  88   ║  🟡   ║
-║  Financial Correctness             ║   20%   ║  99   ║  🟢   ║
-║  Safety & Compliance               ║   15%   ║ 100   ║  🟢   ║
-║  Robustness (injection)            ║   10%   ║  91   ║  🟡   ║
-║  Consistency (pass^k)              ║    5%   ║  93   ║  🟢   ║
-╠════════════════════════════════════╩═════════╩═══════╩═══════╣
-║  Weighted overall 95/100 — but a HARD GATE failed,           ║
-║  so the weighted total does NOT override. Ship is BLOCKED.    ║
-╚══════════════════════════════════════════════════════════════╝
+  STATUS: BLOCKED   run=demo-block   mode=replay
+      Dimension                    Weight   Score  Status
+  🟡  faithfulness_grounding           25    79.8  yellow
+  🟢  retrieval_quality                20    95.8  green
+  🟡  financial_correctness            20    86.8  yellow
+  🔴  safety_compliance                15    66.7  red
+  ⚪  robustness                       10   100.0  green
+  ⚪  consistency                        5      —  na
+  ⚪  business_value                     5      —  na
+  Buckets: factual_lookup 33% · multi_source 67% · temporal 67% · negative 67%
+           · entity 100% · adversarial 100% · long_context 67%
+  Overall: 87.9 / 100
+RELEASE BLOCKED
+  - faithfulness: 0.81 fails >= 0.95 (hard gate)
+  - negative_rejection: 0.667 fails >= 0.95 (hard gate)
+  - hallucination_rate: 0.19 fails <= 0.01 (hard gate)
+WARNINGS:
+  - citation_validity: 0.798 fails >= 0.95 (soft gate)
+  - answer_relevance: 0.867 fails >= 0.9 (soft gate)
+  - numerical_exactness: 0.938 fails >= 0.99 (soft gate)
+  - temporal_correctness: 0.667 fails >= 0.98 (soft gate)
+
 $ echo $?
 1
 ```
 
-After the first real run this section is replaced with measured numbers + a written analysis in
-`REPORT.md` (per-bucket pass rates, the RU-of-finance equivalent: which question types the SUT
-is weakest on, any grounding bugs found). No number appears here until it's measured.
+**Weighted overall is 87.9 — but three hard gates failed, so the weighted total does NOT
+override. Ship is BLOCKED.** That gating rule is the whole point in a regulated domain.
+
+Three statuses (`src/eval/gates.py`):
+
+| Status | When | Exit |
+|--------|------|------|
+| `RELEASE OK` | every hard gate evaluated **and** passed | 0 |
+| `RELEASE BLOCKED` | any hard gate evaluated and failed | 1 |
+| `RELEASE INCOMPLETE` | no hard failure, but some hard gate was never evaluated (e.g. faithfulness without the judge) | 2 |
+
+The INCOMPLETE state is deliberate: a programmatic-only run cannot honestly say "RELEASE OK"
+while faithfulness and hallucination were never measured — so it refuses to.
 
 ---
 
@@ -240,22 +258,29 @@ cp .env.example .env        # live mode only — add OPENAI_API_KEY (§10)
                             # offline mode needs NO secrets
 ```
 
-### The headline: one command, a gated decision
+### The headline: one command, a gated decision (offline, no key)
 
 ```bash
-# Full pipeline (offline by default): ingest → run SUT → score → gate
-make eval                   # exits 0 if all hard gates pass, 1 if any fails
-
-# Prove the release gate (the money shot)
-make eval GOLDEN=datasets/fixtures/failing.jsonl   # → RELEASE BLOCKED, exit 1
+make eval             # run_pass + judge_pass → RELEASE OK,        exit 0
+make demo-block       # run_fail + judge_fail → RELEASE BLOCKED,   exit 1  (the money-shot)
+make eval-incomplete  # run_pass, no judge   → RELEASE INCOMPLETE, exit 2  (honest partial)
 ```
 
-### Individual stages
+Each writes `reports/<run-id>/scorecard.{json,html}` and prints the text scorecard. Under the
+hood `make eval` runs:
 
 ```bash
-make ingest                 # pull SEC filings → chunk → embed → Chroma
-make run                    # run SUT over the golden set → reports/<run>/run.jsonl
-make score                  # metrics → reports/<run>/scorecard.{json,html}
+uv run python -m src.eval.run_eval \
+    --replay datasets/fixtures/run_pass.jsonl \
+    --verdicts datasets/fixtures/judge_pass.json
+# omit --verdicts to get the INCOMPLETE (judge-gates-unevaluated) path
+```
+
+### Live mode (optional — needs OPENAI_API_KEY + network)
+
+```bash
+make ingest   # = run_eval --live : fetch real SEC filings, run the real SUT, score, gate
+make run      # same (live)
 ```
 
 ### Offline tests (no keys, CI-safe)
@@ -372,7 +397,7 @@ Promptfoo (regression/CI grid) · FastAPI (query API) · pytest. CI (`.github/wo
 
 ## 14. Limitations / next steps
 
-- **Not yet implemented** — spec + plan are complete (`docs/implementation/`); code is T0+ in `implementation-plan.md`. Sections marked _(target)_ get real numbers after the first run.
+- **Offline pipeline is built and verified** (472 tests, ruff+mypy clean); live SEC ingest + live judge are implemented but optional. Remaining `_(target)_`: judge calibration, volume-synthesis, Streamlit dashboard.
 - **Judge not yet calibrated** — faithfulness is judge-scored; until κ is measured against human labels, treat it as a hypothesis (§5). Calibration is also a standalone portfolio project.
 - **Golden set authoring** is the main effort — start at 50 to unblock the pipeline, scale to ≥200, target 500.
 - **No online drift monitoring yet** — re-embed on corpus update + alert on retrieval-recall drop is a documented Phase-3 stretch.

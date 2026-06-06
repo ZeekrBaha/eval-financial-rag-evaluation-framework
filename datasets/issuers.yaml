@@ -1,0 +1,56 @@
+# issuers.yaml — List of SEC issuers targeted for corpus ingestion.
+#
+# Each entry provides:
+#   ticker:  Stock ticker symbol
+#   name:    Full company name
+#   cik:     SEC Central Index Key (zero-padded to 10 digits)
+#   sector:  Broad sector classification
+#   forms:   Filing types to ingest (10-K = annual, 10-Q = quarterly)
+#
+# Fetching is a live operation (see src/sut/ingest.fetch_filing).
+# This file is config only — no downloads happen on import.
+
+issuers:
+  # --- Technology sector ---
+
+  - ticker: AAPL
+    name: Apple Inc.
+    cik: "0000320193"
+    sector: Technology
+    forms:
+      - 10-K
+      - 10-Q
+
+  - ticker: MSFT
+    name: Microsoft Corporation
+    cik: "0000789019"
+    sector: Technology
+    forms:
+      - 10-K
+      - 10-Q
+
+  - ticker: NVDA
+    name: NVIDIA Corporation
+    cik: "0001045810"
+    sector: Technology
+    forms:
+      - 10-K
+      - 10-Q
+
+  # --- Automotive / Industrial sector ---
+
+  - ticker: F
+    name: Ford Motor Company
+    cik: "0000037996"
+    sector: Automotive
+    forms:
+      - 10-K
+      - 10-Q
+
+  - ticker: GM
+    name: General Motors Company
+    cik: "0001467858"
+    sector: Automotive
+    forms:
+      - 10-K
+      - 10-Q

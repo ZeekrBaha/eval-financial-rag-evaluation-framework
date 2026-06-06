@@ -1,0 +1,23 @@
+{
+  "fact-001":  {"faithfulness": 0.0,  "answer_relevance": 0.40, "hallucination": 1},
+  "fact-002":  {"faithfulness": 0.0,  "answer_relevance": 0.40, "hallucination": 1},
+  "fact-003":  {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "multi-001": {"faithfulness": 0.0,  "answer_relevance": 0.40, "hallucination": 1},
+  "multi-002": {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "multi-003": {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "temp-001":  {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "temp-002":  {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "temp-003":  {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "neg-001":   {"faithfulness": 0.0,  "answer_relevance": 0.40, "hallucination": 1},
+  "neg-002":   {"faithfulness": 1.0,  "answer_relevance": 0.95, "hallucination": 0},
+  "neg-003":   {"faithfulness": 1.0,  "answer_relevance": 0.95, "hallucination": 0},
+  "ent-001":   {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "ent-002":   {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "ent-003":   {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "adv-001":   {"faithfulness": 1.0,  "answer_relevance": 0.90, "hallucination": 0},
+  "adv-002":   {"faithfulness": 1.0,  "answer_relevance": 0.90, "hallucination": 0},
+  "adv-003":   {"faithfulness": 1.0,  "answer_relevance": 0.90, "hallucination": 0},
+  "long-001":  {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "long-002":  {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0},
+  "long-003":  {"faithfulness": 1.0,  "answer_relevance": 1.0,  "hallucination": 0}
+}
