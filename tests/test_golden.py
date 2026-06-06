@@ -255,3 +255,52 @@ def test_all_valid_buckets_accepted(tmp_path: Path) -> None:
     assert len(items) == len(buckets)
     loaded_buckets = [item.bucket for item in items]
     assert set(loaded_buckets) == set(buckets)
+
+
+# ---------------------------------------------------------------------------
+# extra="forbid": unknown field raises ValueError naming the line
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_field_raises(tmp_path: Path) -> None:
+    row = {**VALID_ITEM, "id": "bad-002", "expected_source": "AAPL-10K-2023#item7"}  # typo: singular
+    f = tmp_path / "golden.jsonl"
+    write_jsonl(f, [row])
+
+    with pytest.raises(ValueError, match="line 1"):
+        load_goldens(f)
+
+
+# ---------------------------------------------------------------------------
+# injection is omittable (defaults to None for non-adversarial rows)
+# ---------------------------------------------------------------------------
+
+
+def test_injection_omittable(tmp_path: Path) -> None:
+    row = {k: v for k, v in VALID_ITEM.items() if k != "injection"}
+    f = tmp_path / "golden.jsonl"
+    write_jsonl(f, [row])
+
+    items = load_goldens(f)
+    assert len(items) == 1
+    assert items[0].injection is None
+
+
+# ---------------------------------------------------------------------------
+# expected_sources and numeric_answers are omittable (default to [])
+# ---------------------------------------------------------------------------
+
+
+def test_lists_omittable(tmp_path: Path) -> None:
+    row = {
+        k: v
+        for k, v in VALID_ITEM.items()
+        if k not in ("expected_sources", "numeric_answers")
+    }
+    f = tmp_path / "golden.jsonl"
+    write_jsonl(f, [row])
+
+    items = load_goldens(f)
+    assert len(items) == 1
+    assert items[0].expected_sources == []
+    assert items[0].numeric_answers == []

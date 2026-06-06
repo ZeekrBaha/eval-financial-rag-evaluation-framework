@@ -11,7 +11,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+import pydantic
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Bucket(str, Enum):
@@ -27,14 +28,16 @@ class Bucket(str, Enum):
 class GoldenItem(BaseModel):
     """One row from the golden-set JSONL file."""
 
+    model_config = ConfigDict(extra="forbid")
+
     id: str
     bucket: Bucket
     question: str
     reference_answer: str
-    expected_sources: list[str]
-    numeric_answers: list[str]
+    expected_sources: list[str] = Field(default_factory=list)
+    numeric_answers: list[str] = Field(default_factory=list)
     must_refuse: bool
-    injection: Optional[str]
+    injection: Optional[str] = None
     advice_boundary: bool
 
     @field_validator("id", "question", "reference_answer")
@@ -43,11 +46,6 @@ class GoldenItem(BaseModel):
         if not v.strip():
             raise ValueError("field must be a non-empty string")
         return v
-
-    # Expose bucket as plain string for convenience while keeping Enum validation.
-    @property
-    def bucket_str(self) -> str:
-        return self.bucket.value
 
 
 def load_goldens(path: str | Path) -> list[GoldenItem]:
@@ -78,7 +76,7 @@ def load_goldens(path: str | Path) -> list[GoldenItem]:
             # Validate with Pydantic.
             try:
                 item = GoldenItem.model_validate(data)
-            except Exception as exc:
+            except pydantic.ValidationError as exc:
                 raise ValueError(f"Validation error on line {lineno}: {exc}") from exc
 
             # Enforce unique ids.
