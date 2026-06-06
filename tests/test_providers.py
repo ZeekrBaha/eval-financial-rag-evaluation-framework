@@ -9,6 +9,7 @@ import importlib
 import math
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -101,7 +102,7 @@ class TestOfflineGenerate:
         assert "[offline:" in result
         assert "no fixture" in result
 
-    def test_generate_fixture_hit(self, tmp_path: "pytest.TempPathFactory", monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_generate_fixture_hit(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Fixture loaded from llm.json is returned when key matches."""
         import json
 
@@ -199,3 +200,60 @@ class TestFixtureKey:
         k1 = fixture_key(system=None, prompt="prompt_a")
         k2 = fixture_key(system=None, prompt="prompt_b")
         assert k1 != k2
+
+
+# ---------------------------------------------------------------------------
+# OfflineProvider — fixtures-file error paths
+# ---------------------------------------------------------------------------
+
+
+class TestOfflineFixturesErrorPaths:
+    def test_corrupt_fixtures_raises_value_error(self, tmp_path: Path) -> None:
+        """A file with invalid JSON raises ValueError mentioning the path."""
+        bad_file = tmp_path / "llm.json"
+        bad_file.write_text("{not valid json", encoding="utf-8")
+        provider = OfflineProvider(fixtures_path=str(bad_file))
+        with pytest.raises(ValueError, match=str(bad_file)):
+            provider.generate("trigger load")
+
+    def test_non_dict_fixtures_raises_value_error(self, tmp_path: Path) -> None:
+        """A file containing a JSON array (not object) raises ValueError."""
+        bad_file = tmp_path / "llm.json"
+        bad_file.write_text("[1, 2, 3]", encoding="utf-8")
+        provider = OfflineProvider(fixtures_path=str(bad_file))
+        with pytest.raises(ValueError, match="must contain a JSON object"):
+            provider.generate("trigger load")
+
+    def test_missing_fixtures_file_loads_as_empty(self, tmp_path: Path) -> None:
+        """A non-existent fixtures path loads silently as empty (no error)."""
+        missing = tmp_path / "does_not_exist.json"
+        provider = OfflineProvider(fixtures_path=str(missing))
+        result = provider.generate("some prompt")
+        # Should fall through to the deterministic synthetic string
+        assert "[offline:" in result
+        assert "no fixture" in result
+
+
+# ---------------------------------------------------------------------------
+# LiveProvider — error paths without network
+# ---------------------------------------------------------------------------
+
+
+class TestLiveProviderErrorPaths:
+    def test_embed_raises_runtime_error_without_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LiveProvider.embed raises RuntimeError when OPENAI_API_KEY is unset."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        provider = LiveProvider()
+        with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+            provider.embed(["some text"])
+
+    def test_generate_raises_runtime_error_without_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """LiveProvider.generate raises RuntimeError when OPENAI_API_KEY is unset."""
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        provider = LiveProvider()
+        with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+            provider.generate("some prompt")

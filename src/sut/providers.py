@@ -94,7 +94,18 @@ class OfflineProvider:
         if self._fixtures is not None:
             return self._fixtures
         if self._fixtures_path.exists():
-            self._fixtures = json.loads(self._fixtures_path.read_text(encoding="utf-8"))
+            raw = self._fixtures_path.read_text(encoding="utf-8")
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"corrupt fixtures file {self._fixtures_path}: {e}"
+                ) from e
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    f"fixtures file {self._fixtures_path} must contain a JSON object"
+                )
+            self._fixtures = parsed
         else:
             self._fixtures = {}
         return self._fixtures
@@ -114,8 +125,9 @@ class OfflineProvider:
             seed = self._text_hash_int(text)
             rng = random.Random(seed)
             vec = [rng.gauss(0, 1) for _ in range(_EMBED_DIM)]
-            # Normalize to unit length
+            # Normalize to unit length; guard against the (astronomically unlikely) zero vector
             norm = math.sqrt(sum(x * x for x in vec))
+            norm = norm or 1.0
             vec = [x / norm for x in vec]
             results.append(vec)
         return results
@@ -168,7 +180,7 @@ class LiveProvider:
 
         api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            raise EnvironmentError(
+            raise RuntimeError(
                 "OPENAI_API_KEY is not set. "
                 "Export it before using live mode: export OPENAI_API_KEY=sk-..."
             )
