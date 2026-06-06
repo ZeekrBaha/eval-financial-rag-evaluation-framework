@@ -289,6 +289,97 @@ class TestLoadReplayMalformed:
         with pytest.raises(ValueError, match=r"line 1"):
             load_replay(bad)
 
+    def test_extra_field_raises_value_error(self, tmp_path: Path) -> None:
+        """RunRecord uses extra='forbid'; an unknown key must raise ValueError.
+
+        This locks the extra=forbid contract so accidental schema drift is caught
+        at load time rather than silently ignored.
+        """
+        bad = tmp_path / "extra_field.jsonl"
+        row = {
+            "id": "fact-001",
+            "bucket": "factual_lookup",
+            "question": "What was revenue?",
+            "answer": "Revenue was $58B [c1].",
+            "retrieved": [
+                {
+                    "chunk_id": "NWM-10K-2024#item7#0",
+                    "text": "For fiscal year ended October 31, 2024, Northwind Motors Inc. recorded total revenue of $58,420 million.",
+                    "similarity": 0.94,
+                    "issuer": "Northwind Motors Inc.",
+                    "form": "10-K",
+                    "filing_date": "2024-12-15",
+                    "accession": "NWM-10K-2024",
+                    "section": "item7",
+                    "source_url": "https://example.invalid/nwm-10k-2024",
+                }
+            ],
+            "citations": {"c1": "NWM-10K-2024#item7#0"},
+            "unmatched_citations": [],
+            "latency_ms": 0,
+            "mode": "replay",
+            "surprise": "x",  # unknown key — must be rejected
+        }
+        bad.write_text(json.dumps(row) + "\n")
+        with pytest.raises(ValueError):
+            load_replay(bad)
+
+    def test_multi_line_error_reports_physical_line_number(self, tmp_path: Path) -> None:
+        """load_replay must report the PHYSICAL line number of the bad row.
+
+        File layout (1-indexed):
+          line 1 — valid row
+          line 2 — valid row
+          line 3 — blank line (skipped by load_replay)
+          line 4 — invalid row (missing required 'id' field)
+
+        The raised ValueError must mention 'line 4'.
+        """
+        bad = tmp_path / "multiline.jsonl"
+        valid_row = {
+            "id": "fact-001",
+            "bucket": "factual_lookup",
+            "question": "What was revenue?",
+            "answer": "Revenue was $58B [c1].",
+            "retrieved": [
+                {
+                    "chunk_id": "NWM-10K-2024#item7#0",
+                    "text": "For fiscal year ended October 31, 2024, Northwind Motors Inc. recorded total revenue of $58,420 million.",
+                    "similarity": 0.94,
+                    "issuer": "Northwind Motors Inc.",
+                    "form": "10-K",
+                    "filing_date": "2024-12-15",
+                    "accession": "NWM-10K-2024",
+                    "section": "item7",
+                    "source_url": "https://example.invalid/nwm-10k-2024",
+                }
+            ],
+            "citations": {"c1": "NWM-10K-2024#item7#0"},
+            "unmatched_citations": [],
+            "latency_ms": 0,
+            "mode": "replay",
+        }
+        invalid_row = {
+            # 'id' is intentionally omitted — required field missing
+            "bucket": "factual_lookup",
+            "question": "What was operating income?",
+            "answer": "Operating income was $12B.",
+            "retrieved": [],
+            "citations": {},
+            "unmatched_citations": [],
+            "latency_ms": 0,
+            "mode": "replay",
+        }
+        content = (
+            json.dumps(valid_row) + "\n"   # line 1
+            + json.dumps(valid_row) + "\n"  # line 2
+            + "\n"                          # line 3 — blank
+            + json.dumps(invalid_row) + "\n"  # line 4 — bad row
+        )
+        bad.write_text(content)
+        with pytest.raises(ValueError, match=r"line 4"):
+            load_replay(bad)
+
 
 # ---------------------------------------------------------------------------
 # run_live — offline (no key, no network)
