@@ -4,14 +4,19 @@ TDD: tests were written before the implementation.
 
 Coverage:
   - run_pass fixture: negative_rejection=1.0 passes; faithfulness/hallucination_rate/
-    advice_boundary unevaluated → PASS, exit_code 0.
+    advice_boundary unevaluated → INCOMPLETE, exit_code 2.
+    (Programmatic-only replay cannot evaluate the judge/robustness hard gates;
+    a full run with judge+robustness will produce PASS.)
   - run_fail fixture: negative_rejection≈0.667 < 0.95 → BLOCKED, exit_code 1;
     citation_validity≈0.80 → soft warning.
   - Synthetic: faithfulness=0.90 (below 0.95 threshold) → BLOCKED on faithfulness.
   - Synthetic: hallucination_rate=0.05 (above 0.01 max, op "<=") → BLOCKED.
   - Synthetic: all hard gates pass → PASS exit 0.
+  - Synthetic: all hard gates None → INCOMPLETE exit 2.
+  - Synthetic: one hard gate failing + others unevaluated → BLOCKED (precedence).
   - Determinism: calling enforce twice yields identical summary_lines.
-  - Unevaluated hard gates are surfaced but do NOT block.
+  - Unevaluated hard gates are surfaced; blocking takes precedence over incompleteness.
+  - Fail messages use the word "fails" (not misleading operator-as-assertion form).
 """
 
 from __future__ import annotations
@@ -73,8 +78,13 @@ def _make_minimal_scorecard(metric_summary: dict[str, float | None]) -> Scorecar
 
 
 # ---------------------------------------------------------------------------
-# T14-01  run_pass fixture → PASS
+# T14-01  run_pass fixture → INCOMPLETE
 # ---------------------------------------------------------------------------
+# run_pass uses programmatic-only replay: negative_rejection=1.0 is evaluated
+# and passes, but faithfulness, hallucination_rate, and advice_boundary require
+# a live LLM judge / robustness run and are therefore unevaluated (None).
+# Because some hard gates are not evaluated, the status is INCOMPLETE (exit 2),
+# NOT PASS. A full live run that supplies judge+robustness results will PASS.
 
 
 class TestRunPass:
@@ -89,23 +99,25 @@ class TestRunPass:
         enforce(sc)
         return sc
 
-    def test_status_is_pass(self, outcome: GateOutcome) -> None:
-        assert outcome.status == "PASS"
+    def test_status_is_incomplete(self, outcome: GateOutcome) -> None:
+        # Programmatic-only replay cannot evaluate judge/robustness hard gates.
+        assert outcome.status == "INCOMPLETE"
 
-    def test_exit_code_is_0(self, outcome: GateOutcome) -> None:
-        assert outcome.exit_code == 0
+    def test_exit_code_is_2(self, outcome: GateOutcome) -> None:
+        # exit 2 = INCOMPLETE (some hard gates not measured)
+        assert outcome.exit_code == 2
 
     def test_no_blocking_failures(self, outcome: GateOutcome) -> None:
         assert outcome.blocking_failures == []
 
-    def test_scorecard_status_stamped_pass(self, scorecard: Scorecard) -> None:
-        assert scorecard.status == "PASS"
+    def test_scorecard_status_stamped_incomplete(self, scorecard: Scorecard) -> None:
+        assert scorecard.status == "INCOMPLETE"
 
     def test_scorecard_hard_gate_failures_empty(self, scorecard: Scorecard) -> None:
         assert scorecard.hard_gate_failures == []
 
-    def test_summary_first_line_release_ok(self, outcome: GateOutcome) -> None:
-        assert outcome.summary_lines[0] == "RELEASE OK"
+    def test_summary_first_line_release_incomplete(self, outcome: GateOutcome) -> None:
+        assert outcome.summary_lines[0] == "RELEASE INCOMPLETE"
 
     def test_unevaluated_hard_contains_faithfulness(self, outcome: GateOutcome) -> None:
         unevaluated_names = [r.name for r in outcome.unevaluated_hard]
@@ -125,6 +137,11 @@ class TestRunPass:
         nr = neg_results[0]
         assert nr.evaluated is True
         assert nr.passed is True
+
+    def test_summary_contains_unevaluated_count(self, outcome: GateOutcome) -> None:
+        """INCOMPLETE summary must mention the count of unevaluated hard gates."""
+        summary_text = "\n".join(outcome.summary_lines)
+        assert "hard gate(s) not evaluated" in summary_text
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +295,106 @@ class TestSyntheticAllHardPass:
 
 
 # ---------------------------------------------------------------------------
-# T14-06  Determinism: summary_lines identical on two calls
+# T14-06  Synthetic: all hard gates None → INCOMPLETE exit 2
+# ---------------------------------------------------------------------------
+
+
+class TestSyntheticAllNoneIncomplete:
+    @pytest.fixture(scope="class")
+    def outcome(self) -> GateOutcome:
+        sc = _make_minimal_scorecard({})  # no metrics at all
+        return enforce(sc)
+
+    def test_status_incomplete(self, outcome: GateOutcome) -> None:
+        assert outcome.status == "INCOMPLETE"
+
+    def test_exit_code_2(self, outcome: GateOutcome) -> None:
+        assert outcome.exit_code == 2
+
+    def test_no_blocking_failures(self, outcome: GateOutcome) -> None:
+        assert outcome.blocking_failures == []
+
+    def test_summary_first_line_release_incomplete(self, outcome: GateOutcome) -> None:
+        assert outcome.summary_lines[0] == "RELEASE INCOMPLETE"
+
+    def test_summary_mentions_unevaluated_count(self, outcome: GateOutcome) -> None:
+        summary_text = "\n".join(outcome.summary_lines)
+        assert "hard gate(s) not evaluated" in summary_text
+
+
+# ---------------------------------------------------------------------------
+# T14-07  Synthetic: one hard gate failing + others unevaluated → BLOCKED
+#         (BLOCKED takes precedence over INCOMPLETE)
+# ---------------------------------------------------------------------------
+
+
+class TestSyntheticBlockedPrecedenceOverIncomplete:
+    @pytest.fixture(scope="class")
+    def outcome(self) -> GateOutcome:
+        # negative_rejection evaluated and failing; all others unevaluated
+        sc = _make_minimal_scorecard({"negative_rejection": 0.50})
+        return enforce(sc)
+
+    def test_status_blocked(self, outcome: GateOutcome) -> None:
+        assert outcome.status == "BLOCKED"
+
+    def test_exit_code_1(self, outcome: GateOutcome) -> None:
+        # Blocking takes precedence over incompleteness → exit 1, not 2
+        assert outcome.exit_code == 1
+
+    def test_negative_rejection_in_blocking(self, outcome: GateOutcome) -> None:
+        names = [r.name for r in outcome.blocking_failures]
+        assert "negative_rejection" in names
+
+    def test_unevaluated_hard_still_populated(self, outcome: GateOutcome) -> None:
+        # Other gates are still unevaluated, surfaced for visibility
+        unevaluated_names = [r.name for r in outcome.unevaluated_hard]
+        assert "faithfulness" in unevaluated_names
+
+
+# ---------------------------------------------------------------------------
+# T14-08  Fail message phrasing: "fails" keyword, not misleading operator form
+# ---------------------------------------------------------------------------
+
+
+class TestFailMessagePhrasing:
+    def test_blocking_hard_line_uses_fails(self) -> None:
+        """Blocking summary lines must say 'fails', not bare operator (ambiguous)."""
+        sc = _make_minimal_scorecard({"negative_rejection": 0.50})
+        outcome = enforce(sc)
+        blocking_lines = [
+            line for line in outcome.summary_lines
+            if "negative_rejection" in line
+        ]
+        assert blocking_lines, "Expected a summary line for negative_rejection"
+        assert "fails" in blocking_lines[0], (
+            f"Expected 'fails' in blocking line; got: {blocking_lines[0]!r}"
+        )
+
+    def test_soft_warning_line_uses_fails(self) -> None:
+        """Soft-gate warning lines must say 'fails'."""
+        from src.config import SOFT_GATES
+
+        # Find a soft gate metric and drive it below its threshold
+        gate = SOFT_GATES[0]
+        metric = gate["metric"]
+        op = gate["op"]
+        # Use a value that definitely fails: 0.0 for >= gates, 1.0 for <= gates
+        failing_value = 0.0 if op == ">=" else 1.0
+        sc = _make_minimal_scorecard({metric: failing_value})
+        outcome = enforce(sc)
+        warning_lines = [
+            line for line in outcome.summary_lines
+            if metric in line
+        ]
+        assert warning_lines, f"Expected a warning line for {metric}"
+        assert "fails" in warning_lines[0], (
+            f"Expected 'fails' in warning line; got: {warning_lines[0]!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# T14-09  Determinism: summary_lines identical on two calls
 # ---------------------------------------------------------------------------
 
 
@@ -299,7 +415,7 @@ class TestDeterminism:
 
 
 # ---------------------------------------------------------------------------
-# T14-07  GateResult structural checks via evaluate_gates
+# T14-10  GateResult structural checks via evaluate_gates
 # ---------------------------------------------------------------------------
 
 
@@ -346,13 +462,13 @@ class TestEvaluateGates:
         assert "0.123" in fr.message
         assert "0.12345" not in fr.message
 
-    def test_unevaluated_hard_does_not_block(self) -> None:
-        """A hard gate that is not in metric_summary must NOT cause BLOCKED."""
+    def test_unevaluated_hard_yields_incomplete(self) -> None:
+        """All hard gates unevaluated → INCOMPLETE (not PASS, not BLOCKED)."""
         # Only provide soft metrics so all hard gates are unevaluated
         sc = _make_minimal_scorecard({})
         outcome = enforce(sc)
-        assert outcome.status == "PASS"
-        assert outcome.exit_code == 0
+        assert outcome.status == "INCOMPLETE"
+        assert outcome.exit_code == 2
         assert len(outcome.unevaluated_hard) == 4  # all 4 hard gates unevaluated
 
     def test_unevaluated_section_in_summary(self) -> None:

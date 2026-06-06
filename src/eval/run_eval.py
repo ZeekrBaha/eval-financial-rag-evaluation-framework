@@ -82,7 +82,7 @@ def _replay_pipeline(
 ) -> int:
     """Offline replay pipeline — no network, no API key.
 
-    Returns exit code (0 = PASS, 1 = BLOCKED).
+    Returns exit code (0 = PASS, 1 = BLOCKED, 2 = INCOMPLETE).
     """
     from src.eval.aggregate import build_scorecard
     from src.eval.gates import enforce
@@ -133,7 +133,7 @@ def _live_pipeline(
 ) -> int:
     """Live pipeline — requires OPENAI_API_KEY and SEC EDGAR network access.
 
-    Returns exit code (0 = PASS, 1 = BLOCKED).
+    Returns exit code (0 = PASS, 1 = BLOCKED, 2 = INCOMPLETE).
     Raises SystemExit with a descriptive message if key/network is unavailable.
     """
     try:
@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         argv: Argument list (defaults to sys.argv[1:]).
 
     Returns:
-        Exit code: 0 = PASS / RELEASE OK, 1 = BLOCKED / error.
+        Exit code: 0 = PASS / RELEASE OK, 1 = BLOCKED / error, 2 = INCOMPLETE.
     """
     parser = _build_parser()
     args = parser.parse_args(argv)

@@ -3,10 +3,12 @@
 TDD: tests written before the implementation.
 
 Coverage:
-  - main([...run_pass...]) returns 0; scorecard.json and scorecard.html written.
+  - main([...run_pass...]) returns 2 (INCOMPLETE); scorecard.json and scorecard.html written.
+    Programmatic-only replay cannot evaluate judge/robustness hard gates → INCOMPLETE.
+    A full live run with judge+robustness results will return 0 (PASS).
   - main([...run_fail...]) returns 1; artifacts written; stdout contains RELEASE BLOCKED.
-  - stdout for run_pass contains "RELEASE OK" and dimension/overall line.
-  - Subprocess test: uv run python -m src.eval.run_eval --replay run_pass exits 0.
+  - stdout for run_pass contains "RELEASE INCOMPLETE" and dimension/overall line.
+  - Subprocess test: uv run python -m src.eval.run_eval --replay run_pass exits 2.
   - Subprocess test: uv run python -m src.eval.run_eval --replay run_fail exits 1.
   - All offline; no network; no API key required.
 """
@@ -50,17 +52,22 @@ def _run_main(args: list[str]) -> tuple[int, str]:
 
 
 # ---------------------------------------------------------------------------
-# Tests: run_pass → exit 0, artifacts present, stdout RELEASE OK
+# Tests: run_pass → exit 2 (INCOMPLETE), artifacts present, stdout RELEASE INCOMPLETE
 # ---------------------------------------------------------------------------
+# run_pass is a programmatic-only replay fixture. It evaluates negative_rejection
+# (passes), but faithfulness, hallucination_rate, and advice_boundary require a live
+# LLM judge / robustness run — those hard gates are unevaluated. Because all hard
+# gates must be evaluated to PASS, the status is INCOMPLETE (exit 2). A full live
+# run providing judge+robustness results will produce PASS (exit 0).
 
 class TestRunPass:
-    def test_exit_code_zero(self, tmp_path: Path) -> None:
+    def test_exit_code_two(self, tmp_path: Path) -> None:
         code, _ = _run_main([
             "--replay", str(RUN_PASS),
             "--out", str(tmp_path),
             "--run-id", "t-pass",
         ])
-        assert code == 0, "run_pass should produce exit code 0 (PASS)"
+        assert code == 2, "run_pass should produce exit code 2 (INCOMPLETE)"
 
     def test_scorecard_json_written(self, tmp_path: Path) -> None:
         _run_main([
@@ -87,13 +94,15 @@ class TestRunPass:
         assert len(content) > 0, "scorecard.html must be non-empty"
         assert "<html" in content.lower() or "<!doctype" in content.lower()
 
-    def test_stdout_contains_release_ok(self, tmp_path: Path) -> None:
+    def test_stdout_contains_release_incomplete(self, tmp_path: Path) -> None:
         _, out = _run_main([
             "--replay", str(RUN_PASS),
             "--out", str(tmp_path),
             "--run-id", "t-pass",
         ])
-        assert "RELEASE OK" in out, f"Expected 'RELEASE OK' in stdout; got:\n{out}"
+        assert "RELEASE INCOMPLETE" in out, (
+            f"Expected 'RELEASE INCOMPLETE' in stdout; got:\n{out}"
+        )
 
     def test_stdout_contains_overall(self, tmp_path: Path) -> None:
         _, out = _run_main([
@@ -171,7 +180,8 @@ class TestRunFail:
 # ---------------------------------------------------------------------------
 
 class TestSubprocess:
-    def test_subprocess_run_pass_exits_0(self, tmp_path: Path) -> None:
+    def test_subprocess_run_pass_exits_2(self, tmp_path: Path) -> None:
+        # Programmatic-only replay → INCOMPLETE (judge/robustness gates not measured)
         result = subprocess.run(
             [
                 "uv", "run", "python", "-m", "src.eval.run_eval",
@@ -183,8 +193,8 @@ class TestSubprocess:
             text=True,
             cwd=Path(__file__).parent.parent,
         )
-        assert result.returncode == 0, (
-            f"Expected exit 0; got {result.returncode}\n"
+        assert result.returncode == 2, (
+            f"Expected exit 2 (INCOMPLETE); got {result.returncode}\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         assert (tmp_path / "sp-pass" / "scorecard.json").exists()

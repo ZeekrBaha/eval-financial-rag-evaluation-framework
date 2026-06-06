@@ -8,9 +8,11 @@ Public surface:
   enforce(scorecard)             -> GateOutcome
 
 Design:
-  - Hard gates that are unevaluated (metric value is None) do NOT block release;
-    they are surfaced in GateOutcome.unevaluated_hard for visibility.
-  - BLOCKED if any hard gate is evaluated AND failed.
+  - BLOCKED if any hard gate is evaluated AND failed (takes precedence).
+  - INCOMPLETE if all evaluated hard gates passed but some hard gates were not
+    evaluated (metric value is None). Unevaluated gates are surfaced in
+    GateOutcome.unevaluated_hard; they never block but they do prevent PASS.
+  - PASS only when every hard gate was evaluated and passed.
   - Soft gate failures are warnings only — never block.
   - Values are rounded to 3 decimal places in messages for deterministic output.
 """
@@ -47,8 +49,8 @@ class GateResult:
 class GateOutcome:
     """Full release decision produced by enforce()."""
 
-    status: Literal["PASS", "BLOCKED"]
-    exit_code: int               # 0 = PASS, 1 = BLOCKED
+    status: Literal["PASS", "BLOCKED", "INCOMPLETE"]
+    exit_code: int               # 0 = PASS, 1 = BLOCKED, 2 = INCOMPLETE
     hard_results: list[GateResult]
     soft_results: list[GateResult]
     blocking_failures: list[GateResult]
@@ -138,11 +140,15 @@ def evaluate_gates(
 
 def decide_release(
     hard_results: list[GateResult],
-) -> tuple[Literal["PASS", "BLOCKED"], int, list[GateResult]]:
+) -> tuple[Literal["PASS", "BLOCKED", "INCOMPLETE"], int, list[GateResult]]:
     """Determine the release decision from hard gate results.
 
-    A gate blocks release only if it was evaluated AND failed.
-    Unevaluated gates (value=None) never block.
+    Priority order:
+      1. BLOCKED (exit 1)  — any hard gate evaluated AND failed.
+      2. INCOMPLETE (exit 2) — no failures but some hard gates were not evaluated.
+      3. PASS (exit 0)     — all hard gates evaluated and passed.
+
+    Unevaluated gates (value=None) never block, but they prevent PASS.
 
     Args:
         hard_results: List of GateResult with kind=="hard".
@@ -153,6 +159,8 @@ def decide_release(
     blocking = [r for r in hard_results if r.evaluated and r.passed is False]
     if blocking:
         return "BLOCKED", 1, blocking
+    if any(r for r in hard_results if not r.evaluated):
+        return "INCOMPLETE", 2, []
     return "PASS", 0, []
 
 
@@ -187,7 +195,17 @@ def enforce(scorecard: "Scorecard") -> GateOutcome:  # type: ignore[name-defined
         for r in blocking_failures:
             rounded_val = round(r.value, 3) if r.value is not None else r.value
             rounded_thresh = round(r.threshold, 3)
-            lines.append(f"  - {r.name} {rounded_val} {r.op} {rounded_thresh} (hard gate)")
+            lines.append(
+                f"  - {r.name}: {rounded_val} fails {r.op} {rounded_thresh} (hard gate)"
+            )
+    elif status == "INCOMPLETE":
+        lines.append("RELEASE INCOMPLETE")
+        n = len(unevaluated_hard)
+        metric_names = ", ".join(r.name for r in unevaluated_hard)
+        lines.append(
+            f"  - {n} hard gate(s) not evaluated"
+            f" (need live judge/robustness): {metric_names}"
+        )
     else:
         lines.append("RELEASE OK")
 
@@ -198,7 +216,9 @@ def enforce(scorecard: "Scorecard") -> GateOutcome:  # type: ignore[name-defined
         for r in failed_soft:
             rounded_val = round(r.value, 3) if r.value is not None else r.value
             rounded_thresh = round(r.threshold, 3)
-            lines.append(f"  - {r.name} {rounded_val} {r.op} {rounded_thresh} (soft gate)")
+            lines.append(
+                f"  - {r.name}: {rounded_val} fails {r.op} {rounded_thresh} (soft gate)"
+            )
 
     # Unevaluated hard gates
     if unevaluated_hard:
