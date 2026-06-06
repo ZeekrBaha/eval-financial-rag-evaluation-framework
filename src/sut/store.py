@@ -37,7 +37,17 @@ if TYPE_CHECKING:
 
 @dataclass
 class RetrievedChunk:
-    """A chunk returned from a similarity query, augmented with a distance score."""
+    """A chunk returned from a similarity query, augmented with a distance score.
+
+    Attributes:
+        score:      Raw Chroma cosine distance. LOWER means MORE similar.
+                    Results from VectorStore.query() are ordered ascending by
+                    score (i.e. closest / most similar first).
+        similarity: Derived convenience property: ``1.0 - score``, clamped to
+                    [0.0, 1.0].  HIGHER means MORE similar.  Do not use ``score``
+                    directly when you want a "higher is better" ranking — use
+                    ``similarity`` instead.
+    """
 
     text: str
     issuer: str
@@ -47,7 +57,17 @@ class RetrievedChunk:
     section: str
     source_url: str
     chunk_id: str
-    score: float  # lower Chroma distance = more similar
+    score: float  # raw Chroma distance — lower = more similar
+
+    @property
+    def similarity(self) -> float:
+        """Return ``1.0 - distance``, clamped to [0.0, 1.0].
+
+        Higher similarity means more relevant.  Useful for threshold-based
+        filtering and display, where "higher is better" is more intuitive
+        than the raw Chroma distance ("lower is better").
+        """
+        return max(0.0, min(1.0, 1.0 - self.score))
 
 
 # ---------------------------------------------------------------------------

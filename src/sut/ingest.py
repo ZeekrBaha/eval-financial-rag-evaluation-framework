@@ -22,6 +22,14 @@ the filing into sections first.  Within each section the existing ~800-word /
 ~100-word-overlap window is applied.  Chunks before the first header (or when
 no headers exist) use the meta-provided section (or "full").
 
+TOC rejection: lines that look like table-of-contents entries (e.g.
+"Item 1A. Risk Factors .......... 12") are NOT treated as section headers.
+A line is rejected as a TOC entry if it contains a dot-leader run (two or more
+consecutive dots) or ends with a trailing page number (whitespace + 1–4 digits).
+When the same section slug appears more than once (once in the TOC, once as the
+real body header), the LAST occurrence is kept — in a 10-K the body always
+follows the TOC.
+
 ~800 tokens, ~100 token overlap.  We approximate tokens as whitespace-split
 words (1 token ≈ 1 word for English prose, good enough for a ~800-word window).
 No tokenizer dependency is required.
@@ -68,6 +76,9 @@ _RAW_CACHE_DIR = Path(__file__).parent.parent.parent / "datasets" / "raw"
 # SEC EDGAR user-agent — required by SEC fair-access policy.
 _SEC_USER_AGENT = "eval-financial-rag adatub08@gmail.com"
 
+# Polite rate-limit pause between EDGAR requests (SEC requests ≤ 10 req/s).
+_SEC_RATE_LIMIT_SLEEP = 0.1
+
 # Default metadata when none is supplied to ingest_fixture.
 _DEFAULT_META: dict[str, str] = {
     "issuer": "unknown",
@@ -111,6 +122,23 @@ _SEC_ITEM_HEADER_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Dot-leader run: two or more consecutive dots (e.g. ".......... 12").
+# Indicates a TOC entry, not a real section header.
+_TOC_DOT_LEADER_RE = re.compile(r"\.{2,}")
+
+# Trailing page number: optional whitespace then 1–4 digits at end of line.
+_TOC_PAGE_NUMBER_RE = re.compile(r"\s+\d{1,4}$")
+
+
+def _is_toc_line(line: str) -> bool:
+    """Return True if *line* looks like a table-of-contents entry.
+
+    Criteria (either condition is sufficient):
+    - Contains a dot-leader run (two or more consecutive dots).
+    - Ends with a trailing page number (whitespace + 1–4 digits).
+    """
+    return bool(_TOC_DOT_LEADER_RE.search(line)) or bool(_TOC_PAGE_NUMBER_RE.search(line))
+
 
 def _normalize_section_slug(item_label: str) -> str:
     """Turn a raw ITEM label (e.g. '1A', '7') into a lowercase slug ('item1a', 'item7')."""
@@ -120,27 +148,63 @@ def _normalize_section_slug(item_label: str) -> str:
 def _split_into_sections(text: str, fallback_section: str) -> list[tuple[str, str]]:
     """Detect SEC ITEM headers in *text* and return (section_slug, section_text) pairs.
 
+    TOC entries are filtered out: if the matched line contains a dot-leader run
+    (e.g. "Item 1A. Risk Factors .......... 12") or ends with a trailing page
+    number, it is NOT treated as a body section header.
+
+    When the same slug appears more than once after filtering, the LAST match
+    wins (the body header always follows the TOC in a real 10-K).
+
     If no headers are found, returns a single tuple (fallback_section, text).
     The text before the first header (if any) is grouped under fallback_section.
     """
-    matches = list(_SEC_ITEM_HEADER_RE.finditer(text))
+    raw_matches = list(_SEC_ITEM_HEADER_RE.finditer(text))
+
+    # Filter out TOC-style lines.
+    matches = []
+    for match in raw_matches:
+        # The matched line starts at the beginning of the match; find its end.
+        line_end = text.find("\n", match.start())
+        if line_end == -1:
+            line_end = len(text)
+        line = text[match.start():line_end]
+        if not _is_toc_line(line):
+            matches.append(match)
 
     if not matches:
         return [(fallback_section, text)]
 
-    sections: list[tuple[str, str]] = []
-
-    # Text before the first header → fallback_section
-    preamble = text[: matches[0].start()]
-    if preamble.strip():
-        sections.append((fallback_section, preamble))
-
+    # Build (slug, start, end) triples for all surviving header matches.
+    entries: list[tuple[str, int, int]] = []
     for i, match in enumerate(matches):
         slug = _normalize_section_slug(match.group(1))
         section_start = match.start()
         section_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        section_text = text[section_start:section_end]
-        sections.append((slug, section_text))
+        entries.append((slug, section_start, section_end))
+
+    # Safety net: when a slug appears more than once, keep the LAST occurrence.
+    # Build a dict preserving insertion order (Python 3.7+), then overwrite with
+    # later entries so the final value is the last-seen one.
+    seen: dict[str, tuple[int, int]] = {}
+    for slug, start, end in entries:
+        seen[slug] = (start, end)
+
+    # Reconstruct the ordered list of unique (slug, start, end) triples.
+    # We need chronological (start-position) order, not insertion order, so sort.
+    unique_entries = sorted(
+        [(slug, start, end) for slug, (start, end) in seen.items()],
+        key=lambda t: t[1],
+    )
+
+    sections: list[tuple[str, str]] = []
+
+    # Text before the first surviving header → fallback_section.
+    preamble = text[: unique_entries[0][1]]
+    if preamble.strip():
+        sections.append((fallback_section, preamble))
+
+    for slug, start, end in unique_entries:
+        sections.append((slug, text[start:end]))
 
     return sections
 
@@ -232,6 +296,15 @@ def parse_and_chunk(text: str, meta: dict[str, str]) -> list[Chunk]:
                 source_url=source_url,
             )
         )
+
+    # Guarantee uniqueness: _split_into_sections ensures unique slugs, and
+    # _chunk_words restarts idx per section, so collisions should be impossible.
+    # Assert here as a hard invariant so regressions are caught immediately.
+    ids = [c.chunk_id for c in chunks]
+    assert len(ids) == len(set(ids)), (
+        f"BUG: duplicate chunk_ids produced for accession={accession!r}: "
+        f"{[cid for cid in ids if ids.count(cid) > 1]}"
+    )
 
     return chunks
 
@@ -341,15 +414,9 @@ def fetch_filing(
     if cache_file.exists():
         text = cache_file.read_text(encoding="utf-8")
     else:
-        # Construct EDGAR filing index URL.
+        # Construct the direct document URL.
         # Accession number format: XXXXXXXXXX-YY-ZZZZZZ → XXXXXXXXXXYYYZZZZZZ (no dashes)
         accession_nodash = accession.replace("-", "")
-        index_url = (
-            f"https://www.sec.gov/cgi-bin/browse-edgar"
-            f"?action=getcompany&CIK={cik}&type={form}"
-            f"&dateb=&owner=include&count=10&search_text="
-        )
-        # Direct document URL for the filing index
         filing_url = (
             f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/"
             f"{accession_nodash}/{accession_nodash}.txt"
@@ -357,8 +424,8 @@ def fetch_filing(
 
         headers = {"User-Agent": _SEC_USER_AGENT}
 
-        # Polite rate limiting — SEC requests 10 req/s max
-        time.sleep(0.1)
+        # Polite rate limiting — SEC requests ≤ 10 req/s.
+        time.sleep(_SEC_RATE_LIMIT_SLEEP)
 
         response = requests.get(filing_url, headers=headers, timeout=30)
         response.raise_for_status()
@@ -367,9 +434,11 @@ def fetch_filing(
         # Cache the raw download
         cache_file.write_text(text, encoding="utf-8")
 
+    # Build source_url from the same no-dash accession (reuse if already computed).
+    _nodash = accession.replace("-", "")
     source_url = (
         f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/"
-        f"{accession.replace('-', '')}/{accession.replace('-', '')}.txt"
+        f"{_nodash}/{_nodash}.txt"
     )
 
     meta = {

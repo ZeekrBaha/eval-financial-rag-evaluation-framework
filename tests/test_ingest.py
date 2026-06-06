@@ -355,6 +355,95 @@ class TestCrossFilingChunkIdUniqueness:
 
 
 # ---------------------------------------------------------------------------
+# TOC-rejection tests (T3 correctness fix)
+# ---------------------------------------------------------------------------
+
+
+# A 10-K whose text includes both a TOC block AND real body headers for item1a.
+# The TOC entry has a dot-leader run; the body header is a plain line.
+_TOC_FILING_TEXT = (
+    # Table of contents block
+    "PART I\n\n"
+    "   Item 1. Business .......... 3\n"
+    "   Item 1A. Risk Factors .......... 12\n"
+    "   Item 7. MD&A .......... 45\n\n"
+    # Real body content
+    "Item 1. Business.\n\n"
+    "The company was incorporated in 1976 and operates globally.\n\n"
+    "Item 1A.\n\n"
+    "Risk Factors body content here. The company faces substantial competition "
+    "and regulatory risks in all markets.\n\n"
+    "Item 7. Management Discussion.\n\n"
+    "Revenue grew 8% year over year driven by Services segment expansion.\n"
+)
+
+_TOC_FILING_META = {
+    "issuer": "AAPL",
+    "form": "10-K",
+    "filing_date": "2024-09-28",
+    "accession": "0000320193-24-TOC-TEST",
+    "section": "full",
+    "source_url": "https://sec.gov/test",
+}
+
+
+class TestTOCRejection:
+    def test_toc_entry_not_treated_as_header(self) -> None:
+        """TOC lines with dot-leaders must not create extra sections."""
+        chunks = parse_and_chunk(_TOC_FILING_TEXT, _TOC_FILING_META)
+        # Only one item1a section should exist (the body one, not the TOC entry).
+        item1a_chunks = [c for c in chunks if c.section == "item1a"]
+        assert item1a_chunks, "expected at least one item1a chunk from body"
+        # Check body content is present (not clobbered by TOC entry).
+        all_text = " ".join(c.text for c in item1a_chunks)
+        assert "Risk Factors body content here" in all_text, (
+            "body content of item1a was lost; TOC entry may have overwritten it"
+        )
+
+    def test_chunk_ids_unique_with_toc_present(self) -> None:
+        """Even with a TOC block present, all chunk_ids must be unique."""
+        chunks = parse_and_chunk(_TOC_FILING_TEXT, _TOC_FILING_META)
+        ids = [c.chunk_id for c in chunks]
+        assert len(ids) == len(set(ids)), (
+            f"duplicate chunk_ids: {[cid for cid in ids if ids.count(cid) > 1]}"
+        )
+
+    def test_only_one_item1a_section_slug(self) -> None:
+        """After section detection + dedup, item1a appears exactly once as a slug."""
+        from src.sut.ingest import _split_into_sections
+        sections = _split_into_sections(_TOC_FILING_TEXT, "full")
+        slugs = [slug for slug, _ in sections]
+        item1a_count = slugs.count("item1a")
+        assert item1a_count == 1, (
+            f"expected 1 item1a section, got {item1a_count}; all slugs: {slugs}"
+        )
+
+    def test_plural_items_phrase_not_treated_as_header(self) -> None:
+        """'Items 1 through 4' (plural) must NOT be detected as a section header."""
+        text = "Items 1 through 4 are incorporated by reference from the annual report."
+        chunks = parse_and_chunk(text, _SECTIONED_META)
+        # Should fall back to the meta-provided section slug, not produce item1.
+        assert all(c.section == _SECTIONED_META["section"] for c in chunks), (
+            "plural 'Items' phrase was incorrectly parsed as a section header"
+        )
+
+    def test_page_number_only_trailer_excluded(self) -> None:
+        """A line like 'Item 2. Properties   15' (trailing page number) is a TOC line."""
+        text = (
+            "Item 2. Properties   15\n\n"  # TOC line — trailing page number
+            "Item 2. Properties.\n\n"       # real body header
+            "The company owns its headquarters building.\n"
+        )
+        meta = dict(_TOC_FILING_META)
+        from src.sut.ingest import _split_into_sections
+        sections = _split_into_sections(text, "full")
+        slugs = [slug for slug, _ in sections]
+        assert slugs.count("item2") == 1, (
+            f"item2 appeared {slugs.count('item2')} times; expected 1. Slugs: {slugs}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # fetch_filing — existence check only (not executed in tests)
 # ---------------------------------------------------------------------------
 

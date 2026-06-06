@@ -185,6 +185,102 @@ class TestRetrievedChunk:
 
 
 # ---------------------------------------------------------------------------
+# similarity property
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievedChunkSimilarity:
+    def test_similarity_is_one_minus_score(self) -> None:
+        rc = RetrievedChunk(
+            text="hello",
+            issuer="AAPL",
+            form="10-K",
+            filing_date="2024-09-28",
+            accession="acc-1",
+            section="Item 1",
+            source_url="https://sec.gov/",
+            chunk_id="acc-1#Item 1#0",
+            score=0.25,
+        )
+        assert rc.similarity == pytest.approx(0.75)
+
+    def test_similarity_clamped_to_zero_for_high_distance(self) -> None:
+        rc = RetrievedChunk(
+            text="hello",
+            issuer="AAPL",
+            form="10-K",
+            filing_date="2024-09-28",
+            accession="acc-1",
+            section="Item 1",
+            source_url="https://sec.gov/",
+            chunk_id="acc-1#Item 1#0",
+            score=1.5,  # distance > 1.0 should clamp to 0
+        )
+        assert rc.similarity == 0.0
+
+    def test_similarity_clamped_to_one_for_negative_distance(self) -> None:
+        rc = RetrievedChunk(
+            text="hello",
+            issuer="AAPL",
+            form="10-K",
+            filing_date="2024-09-28",
+            accession="acc-1",
+            section="Item 1",
+            source_url="https://sec.gov/",
+            chunk_id="acc-1#Item 1#0",
+            score=-0.1,  # should clamp to 1.0
+        )
+        assert rc.similarity == 1.0
+
+    def test_score_field_still_present(self) -> None:
+        """Adding similarity must not remove score."""
+        rc = RetrievedChunk(
+            text="hello",
+            issuer="AAPL",
+            form="10-K",
+            filing_date="2024-09-28",
+            accession="acc-1",
+            section="Item 1",
+            source_url="https://sec.gov/",
+            chunk_id="acc-1#Item 1#0",
+            score=0.3,
+        )
+        assert rc.score == pytest.approx(0.3)
+
+
+# ---------------------------------------------------------------------------
+# Query ordering: closest-first (ascending distance / descending similarity)
+# ---------------------------------------------------------------------------
+
+
+class TestQueryOrdering:
+    def test_results_ordered_ascending_by_score(self) -> None:
+        """store.query() must return results ordered closest-first (ascending distance)."""
+        store = VectorStore()
+        # Ingest distinct chunks; OfflineProvider produces deterministic embeddings.
+        chunks = [_make_chunk(text=f"document about topic number {i}", idx=i) for i in range(5)]
+        store.add(chunks)
+        results = store.query("document about topic", k=5)
+        assert len(results) >= 2, "need at least 2 results to check ordering"
+        scores = [r.score for r in results]
+        assert scores == sorted(scores), (
+            f"results not ordered by ascending score (distance): {scores}"
+        )
+
+    def test_results_ordered_descending_by_similarity(self) -> None:
+        """similarity values must be non-increasing (descending) across results."""
+        store = VectorStore()
+        chunks = [_make_chunk(text=f"financial report section {i}", idx=i) for i in range(5)]
+        store.add(chunks)
+        results = store.query("financial report", k=5)
+        assert len(results) >= 2
+        similarities = [r.similarity for r in results]
+        assert similarities == sorted(similarities, reverse=True), (
+            f"similarity not descending: {similarities}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # persist path (smoke test — creates a PersistentClient if path given)
 # ---------------------------------------------------------------------------
 
