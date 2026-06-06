@@ -200,6 +200,38 @@ class TestNumericalExactness:
         assert result.score == 1.0
         assert result.passed is True
 
+    def test_verbal_scale_billion_matches_million_golden(self) -> None:
+        """Golden '1200' (expressed in millions) matches answer '$1.2 billion'."""
+        ref = _make_ref("chunk#0", "Revenue was $1.2 billion.")
+        rec = _make_record(
+            "x",
+            "factual_lookup",
+            "Total revenue was $1.2 billion [c1].",
+            [ref],
+            {"c1": "chunk#0"},
+        )
+        g = _make_golden("x", Bucket.factual_lookup, numeric_answers=["1200"])
+        result = numerical_exactness(rec, g)
+        assert result.applicable is True
+        assert result.score == 1.0
+        assert result.passed is True
+
+    def test_percentage_value_below_floor_matches(self) -> None:
+        """Golden '7.8' matches answer '7.8%' (no >= 100 floor for target matching)."""
+        ref = _make_ref("chunk#0", "Revenue grew approximately 7.8%.")
+        rec = _make_record(
+            "x",
+            "factual_lookup",
+            "Revenue grew approximately 7.8% year over year [c1].",
+            [ref],
+            {"c1": "chunk#0"},
+        )
+        g = _make_golden("x", Bucket.factual_lookup, numeric_answers=["7.8"])
+        result = numerical_exactness(rec, g)
+        assert result.applicable is True
+        assert result.score == 1.0
+        assert result.passed is True
+
 
 # ---------------------------------------------------------------------------
 # 2. citation_validity
@@ -290,6 +322,27 @@ class TestCitationValidity:
         assert result.applicable is True
         # c1 valid (1/2), c2 unmatched (0/2) → score = 0.5
         assert result.score == pytest.approx(0.5)
+        assert result.passed is False
+
+    def test_fail_over_citation_bypass_numeric_sentence(self) -> None:
+        """Production over-citation bypass: a numeric sentence cited to a number-free
+        but topically similar chunk must be INVALID (no Jaccard escape)."""
+        chunk_text = (
+            "Northwind Motors vehicle sales grew on strong demand; "
+            "revenue momentum continuing."
+        )
+        ref = _make_ref("chunk#0", chunk_text)
+        rec = _make_record(
+            "x",
+            "factual_lookup",
+            "Revenue was $58,420 million driven by strong vehicle sales at Northwind Motors [c1].",
+            [ref],
+            {"c1": "chunk#0"},
+        )
+        g = _make_golden("x", Bucket.factual_lookup)
+        result = citation_validity(rec, g)
+        assert result.applicable is True
+        assert result.score < 1.0
         assert result.passed is False
 
     def test_not_applicable_when_no_citations(self) -> None:
@@ -415,6 +468,20 @@ class TestNegativeRejection:
         )
         g = _make_golden("neg-x", Bucket.negative, must_refuse=True)
         result = negative_rejection(rec, g)
+        assert result.passed is True
+
+    def test_pass_do_not_disclose_cue(self) -> None:
+        """Broadened cue set: 'do not disclose' with empty citations passes."""
+        rec = _make_record(
+            "neg-x",
+            "negative",
+            "The provided filings do not disclose this.",
+            [],
+            {},
+        )
+        g = _make_golden("neg-x", Bucket.negative, must_refuse=True)
+        result = negative_rejection(rec, g)
+        assert result.applicable is True
         assert result.passed is True
 
 

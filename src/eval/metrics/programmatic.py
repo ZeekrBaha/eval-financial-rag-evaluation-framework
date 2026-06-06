@@ -72,11 +72,10 @@ _YEAR_MAX = 2030
 # Stopwords for content-word Jaccard overlap (citation validity fallback path).
 _STOPWORDS: frozenset[str] = frozenset(
     {
-        "about", "again", "also", "although", "another", "around",
-        "already", "also", "along", "although", "another", "back",
-        "because", "been", "before", "between", "both", "come",
-        "does", "does", "during", "each", "even", "every",
-        "first", "from", "give", "good", "have", "hold",
+        "about", "again", "along", "already", "also", "although",
+        "another", "around", "back", "because", "been", "before",
+        "between", "both", "come", "does", "during", "each", "even",
+        "every", "first", "from", "give", "good", "have", "hold",
         "into", "just", "keep", "know", "last", "like", "long",
         "make", "many", "mean", "might", "more", "most", "much",
         "never", "next", "nothing", "only", "open", "over", "real",
@@ -92,13 +91,38 @@ _STOPWORDS: frozenset[str] = frozenset(
 # Minimum Jaccard similarity for the content-overlap citation-support path.
 _JACCARD_THRESHOLD = 0.12
 
-# Refusal cue phrases recognised by negative_rejection (case-insensitive).
+# Abbreviations whose trailing period must NOT be treated as a sentence boundary
+# when splitting an answer into sentences for per-citation binding.
+_SENTENCE_ABBREVIATIONS: tuple[str, ...] = (
+    "Inc", "Corp", "Ltd", "Co", "LLC", "No", "vs", "etc",
+    "Jr", "Sr", "Mr", "Ms", "Mrs", "Dr",
+)
+
+# Verbal scale multipliers for numeric_exactness scale expansion.
+_SCALE_MULTIPLIERS: dict[str, float] = {
+    "thousand": 1_000.0,
+    "million": 1_000_000.0,
+    "billion": 1_000_000_000.0,
+    "trillion": 1_000_000_000_000.0,
+}
+
+# Refusal cue phrases recognised by negative_rejection (case-insensitive substring).
 _REFUSAL_CUES: tuple[str, ...] = (
     "not in the provided sources",
     "do not contain",
     "cannot find",
     "not available in the sources",
     "unable to find",
+    "do not disclose",
+    "not disclosed",
+    "not reported",
+    "no information",
+    "don't have",
+    "do not have",
+    "not provided",
+    "cannot answer",
+    "no such data",
+    "not contain",
 )
 
 # context_recall / context_precision pass thresholds (from config soft gates).
@@ -138,6 +162,50 @@ def _extract_significant_numbers(text: str) -> set[str]:
     return result
 
 
+def _normalized_value(token: str) -> float | None:
+    """Parse a normalized numeric token to a float, or None if not numeric."""
+    cleaned = _normalize_number(token)
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+# Financial filings conventionally report figures in millions, so golden
+# numeric_answers are expressed in that unit (e.g. "1200" = $1,200 million).
+_FILING_UNIT = _SCALE_MULTIPLIERS["million"]
+
+
+def _extract_answer_values(text: str) -> set[float]:
+    """Return every numeric value in `text` (no >= 100 floor; decimals included).
+
+    Each number immediately followed by a verbal scale word
+    ("thousand"/"million"/"billion"/"trillion") is additionally expanded to:
+      - its base-unit value (e.g. "$1.2 billion" -> 1_200_000_000), and
+      - its value normalized to the filing unit of millions
+        (e.g. "$1.2 billion" -> 1200), so it matches a golden of "1200".
+    The bare value is always included so "7.8%" matches golden "7.8".
+    """
+    values: set[float] = set()
+    for match in re.finditer(
+        r"(\$?[\d,]+(?:\.\d+)?)\s*(thousand|million|billion|trillion)?",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        value = _normalized_value(match.group(1))
+        if value is None:
+            continue
+        values.add(value)
+        scale_word = match.group(2)
+        if scale_word is not None:
+            scaled = value * _SCALE_MULTIPLIERS[scale_word.lower()]
+            values.add(scaled)
+            values.add(scaled / _FILING_UNIT)
+    return values
+
+
 def _content_words(text: str) -> set[str]:
     """Return lowercased tokens of length ≥ 4 that are not stopwords."""
     return {
@@ -147,6 +215,32 @@ def _content_words(text: str) -> set[str]:
     }
 
 
+# Generic corporate suffixes ignored when picking an issuer's distinctive token.
+_GENERIC_ISSUER_SUFFIXES: frozenset[str] = frozenset(
+    {
+        "inc", "inc.", "corp", "corp.", "llc", "ltd", "company",
+        "co", "co.", "group", "holdings", "bank",
+    }
+)
+
+
+def _distinctive_issuer_token(issuer: str) -> str | None:
+    """Return the longest non-generic token of an issuer name, or None.
+
+    Generic suffixes ({Inc, Corp, LLC, Ltd, Company, Co, Group, Holdings, Bank})
+    are stripped before choosing the longest remaining token, which serves as the
+    distinctive name fragment that must appear in the answer.
+    """
+    candidates = [
+        tok
+        for tok in re.findall(r"[A-Za-z]+", issuer)
+        if tok.lower() not in _GENERIC_ISSUER_SUFFIXES
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=len)
+
+
 def _jaccard(set_a: set[str], set_b: set[str]) -> float:
     """Jaccard similarity between two sets; returns 0.0 for empty inputs."""
     if not set_a or not set_b:
@@ -154,33 +248,61 @@ def _jaccard(set_a: set[str], set_b: set[str]) -> float:
     return len(set_a & set_b) / len(set_a | set_b)
 
 
-def _citation_supports(answer: str, chunk_text: str) -> bool:
-    """Return True if chunk_text supports the claim made in answer.
+_ABBREV_PLACEHOLDER = "\x00"
 
-    Decision tree:
-    1. Extract significant financial numbers from the answer.
-    2. If the answer has significant numbers AND the chunk also has significant numbers:
-       → check numeric overlap (any answer number appears in chunk).
-    3. If the answer has significant numbers BUT the chunk has NO significant numbers:
-       → contextual citation; fall back to content-word Jaccard ≥ 0.12.
-    4. If the answer has no significant numbers:
-       → content-word Jaccard ≥ 0.12.
 
-    This handles long-context answers where individual cited chunks provide
-    contextual support (e.g. risk factors) without repeating every financial figure.
+def _split_sentences(answer: str) -> list[str]:
+    """Split an answer into sentences for per-citation binding.
+
+    Periods inside known abbreviations ("Inc.", "Corp.", "LLC.") and inside
+    decimal numbers ("1.8", "7.8") are protected so they do not trigger a false
+    sentence break, then sentences are split on terminal ./!/? + whitespace.
     """
-    answer_nums = _extract_significant_numbers(answer)
-    chunk_nums = _extract_significant_numbers(chunk_text)
+    protected = answer
+    for abbr in _SENTENCE_ABBREVIATIONS:
+        protected = re.sub(
+            rf"\b{re.escape(abbr)}\.", abbr + _ABBREV_PLACEHOLDER, protected
+        )
+    protected = re.sub(r"(\d)\.(\d)", r"\1" + _ABBREV_PLACEHOLDER + r"\2", protected)
+    parts = re.split(r"(?<=[.!?])\s+", protected)
+    return [p.replace(_ABBREV_PLACEHOLDER, ".") for p in parts if p.strip()]
 
-    if answer_nums:
-        if chunk_nums:
-            # Both sides have financial numbers — require numeric overlap.
-            return bool(answer_nums & chunk_nums)
-        else:
-            # Chunk provides textual/contextual support — use Jaccard fallback.
-            return _jaccard(_content_words(answer), _content_words(chunk_text)) >= _JACCARD_THRESHOLD
-    else:
-        return _jaccard(_content_words(answer), _content_words(chunk_text)) >= _JACCARD_THRESHOLD
+
+def _sentences_for_marker(answer: str, marker: str) -> str:
+    """Return the joined sentence(s) of `answer` that contain the citation marker.
+
+    A sentence "contains" the marker if the literal "[cN]" appears in it. When the
+    marker cannot be localized to any sentence, the whole answer is returned so the
+    qualitative Jaccard fallback still has text to work with.
+    """
+    needle = f"[{marker}]"
+    matching = [s for s in _split_sentences(answer) if needle in s]
+    if matching:
+        return " ".join(matching)
+    return answer
+
+
+def _citation_supports(answer: str, marker: str, chunk_text: str) -> bool:
+    """Return True if `chunk_text` genuinely supports the cited marker's sentence.
+
+    Per-citation sentence binding:
+    1. Locate the sentence(s) containing the marker "[cN]".
+    2. Extract significant numbers (>= 100, non-year) from THAT sentence only.
+    3. If the sentence has significant numbers → the chunk MUST contain at least
+       one of them (no Jaccard escape for numeric sentences).
+    4. If the sentence has NO significant numbers → validate via content-word
+       Jaccard >= 0.12 between the sentence and the chunk.
+
+    This prevents the over-citation bypass where a number-free but topically
+    similar chunk validates a numeric claim.
+    """
+    sentence = _sentences_for_marker(answer, marker)
+    sentence_nums = _extract_significant_numbers(sentence)
+
+    if sentence_nums:
+        chunk_nums = _extract_significant_numbers(chunk_text)
+        return bool(sentence_nums & chunk_nums)
+    return _jaccard(_content_words(sentence), _content_words(chunk_text)) >= _JACCARD_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -207,21 +329,26 @@ def numerical_exactness(record: RunRecord, golden: GoldenItem) -> MetricResult:
             detail="No numeric answers defined for this golden item.",
         )
 
-    # Extract all normalized numeric tokens from the answer.
-    answer_nums = {
-        _normalize_number(tok)
-        for tok in re.findall(r"\$?[\d,]+(?:\.\d+)?", record.answer)
-        if _normalize_number(tok)
-    }
+    # Extract every numeric value from the answer (no >= 100 floor), including
+    # decimals and verbal-scale expansions ("$1.2 billion" -> 1.2 and 1.2e9).
+    answer_values = _extract_answer_values(record.answer)
 
-    target_nums = [_normalize_number(n) for n in golden.numeric_answers]
-    matched = [n for n in target_nums if n in answer_nums]
-    score = len(matched) / len(target_nums)
+    targets = [_normalize_number(n) for n in golden.numeric_answers]
+    matched: list[str] = []
+    unmatched: list[str] = []
+    for raw, normalized in zip(golden.numeric_answers, targets):
+        target_value = _normalized_value(normalized)
+        if target_value is not None and target_value in answer_values:
+            matched.append(raw)
+        else:
+            unmatched.append(raw)
+
+    score = len(matched) / len(targets)
     passed = score == 1.0
 
     detail = (
-        f"Matched {len(matched)}/{len(target_nums)} numeric answers: "
-        f"targets={target_nums}, matched={matched}."
+        f"Matched {len(matched)}/{len(targets)} numeric answers (value-normalized, "
+        f"scale-expanded): matched={matched}, unmatched={unmatched}."
     )
     return MetricResult(
         metric=metric_name,
@@ -269,7 +396,7 @@ def citation_validity(record: RunRecord, golden: GoldenItem) -> MetricResult:
         if ref is None:
             invalid_reasons.append(f"{marker}→{chunk_id} not in retrieved")
             continue
-        if _citation_supports(record.answer, ref.text):
+        if _citation_supports(record.answer, marker, ref.text):
             valid += 1
         else:
             invalid_reasons.append(f"{marker}→{chunk_id} does not support claim")
@@ -486,14 +613,13 @@ def entity_disambiguation(record: RunRecord, golden: GoldenItem) -> MetricResult
 
     cited_from_correct = len(wrong_issuer_citations) == 0
 
-    # (b) Correct issuer name or a distinctive token appears in the answer.
+    # (b) The issuer's DISTINCTIVE token must appear in the answer. The distinctive
+    # token is the longest token of the issuer name after stripping generic suffixes
+    # (Inc, Corp, LLC, etc.), so e.g. "Northwind Auto Finance LLC" -> "Northwind".
     answer_lower = record.answer.lower()
-    issuer_lower = correct_issuer.lower()
-    distinctive_tokens = [
-        tok for tok in correct_issuer.split() if tok[0].isupper() and len(tok) > 3
-    ]
-    issuer_in_answer = issuer_lower in answer_lower or any(
-        tok.lower() in answer_lower for tok in distinctive_tokens
+    distinctive_token = _distinctive_issuer_token(correct_issuer)
+    issuer_in_answer = (
+        distinctive_token is not None and distinctive_token.lower() in answer_lower
     )
 
     passed = cited_from_correct and issuer_in_answer
