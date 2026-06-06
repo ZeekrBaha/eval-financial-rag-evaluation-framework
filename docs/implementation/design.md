@@ -8,7 +8,7 @@ Decisions made here. Options were enumerated in `research.md`.
 |-------|--------|----------------------|
 | Language | Python 3.12 | All eval tooling is Python-native. |
 | Pkg mgr | uv | Matches existing portfolio convention; fast, lockfile reproducibility. |
-| Ingestion + retrieval | LlamaIndex | Clean SEC/PDF ingestion + node metadata; LangChain noted as alt. |
+| Ingestion + retrieval | direct `chromadb` + a section-aware word-window chunker | **Revised during T3 (was LlamaIndex):** F-01 never required LlamaIndex; direct chromadb is simpler, fewer deps, and keeps offline determinism clean. LlamaIndex removed from deps. |
 | Vector store | Chroma (local, persisted) | No DB server → reproducible demo. `pgvector` documented as scale path. |
 | Embeddings | `text-embedding-3-small` (live) / `bge-small-en` (offline) | Cost + offline determinism. |
 | Generator | `gpt-4o-mini` (live) / fixture (offline) | Cheap; fixtures for CI. |
