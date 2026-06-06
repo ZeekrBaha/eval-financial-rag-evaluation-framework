@@ -101,9 +101,8 @@ DIMENSION_WEIGHTS: dict[str, int] = {
     "business_value": 5,
 }
 
-assert sum(DIMENSION_WEIGHTS.values()) == 100, (
-    "DIMENSION_WEIGHTS must sum to 100 — check config.py"
-)
+if sum(DIMENSION_WEIGHTS.values()) != 100:
+    raise ValueError(f"DIMENSION_WEIGHTS must sum to 100, got {sum(DIMENSION_WEIGHTS.values())}")
 
 # ---------------------------------------------------------------------------
 # RETRIEVAL SETTINGS
