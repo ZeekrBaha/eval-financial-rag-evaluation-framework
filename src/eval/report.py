@@ -7,10 +7,14 @@ Public surface:
 
 from __future__ import annotations
 
+import operator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.config import HARD_GATES, SOFT_GATES
+
+# Comparison operators for gate evaluation, keyed by the config op string.
+_OPS = {">=": operator.ge, "<=": operator.le}
 
 if TYPE_CHECKING:
     from src.eval.aggregate import Scorecard
@@ -155,10 +159,8 @@ def render_report(
         else:
             value_str = f"{value:.4f}"
             if gate_detail is not None:
-                import operator as _op_mod
-                _ops = {">=": _op_mod.ge, "<=": _op_mod.le}
                 op_str, threshold_val = gate_detail
-                passed = _ops[op_str](value, threshold_val)
+                passed = _OPS[op_str](value, threshold_val)
                 pass_str = "Pass" if passed else "Fail"
             else:
                 pass_str = "—"

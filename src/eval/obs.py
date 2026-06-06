@@ -44,7 +44,10 @@ def configure_run_logging(run_dir: Path, *, verbose: bool = False) -> logging.Lo
         The configured 'eval' logger.
     """
     logger = logging.getLogger(_ROOT_NAME)
-    # Clear any existing handlers so repeated calls don't duplicate lines.
+    # Close + clear any existing handlers so repeated calls don't duplicate lines
+    # and don't leak the previous run.log file descriptor.
+    for handler in logger.handlers:
+        handler.close()
     logger.handlers.clear()
     logger.setLevel(logging.DEBUG)
 
