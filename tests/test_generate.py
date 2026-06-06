@@ -343,6 +343,54 @@ class TestAnswerQuestion:
         assert result.answer == ""
         assert result.citations == {}
 
+    # ------------------------------------------------------------------
+    # unmatched_citations — hallucinated / out-of-range markers (T10 support)
+    # ------------------------------------------------------------------
+
+    def test_out_of_range_marker_goes_to_unmatched(self) -> None:
+        """Model cites [c9] when only c1..c3 exist → c9 in unmatched_citations, not citations."""
+        store = _make_store(
+            ("Passage A.", "acc-0#Item 7#0"),
+            ("Passage B.", "acc-1#Item 7#0"),
+            ("Passage C.", "acc-2#Item 7#0"),
+        )
+        # Stub cites [c9] which is outside the 3-chunk marker_map
+        stub = StubProvider("Revenue was high [c9].")
+        result = answer_question("Revenue?", store, provider=stub, k=3)
+        assert "c9" not in result.citations
+        assert result.unmatched_citations == ["c9"]
+
+    def test_mixed_valid_and_hallucinated_markers(self) -> None:
+        """Model cites [c1] (valid) and [c7] (invalid) → citations has c1, unmatched has c7."""
+        store = _make_store(
+            ("Net sales were $383 billion.", "acc-0#Item 7#0"),
+        )
+        stub = StubProvider("Net sales [c1] grew significantly [c7].")
+        result = answer_question("Revenue?", store, provider=stub, k=1)
+        assert "c1" in result.citations
+        assert "c7" not in result.citations
+        assert result.unmatched_citations == ["c7"]
+
+    def test_no_unmatched_when_all_markers_valid(self) -> None:
+        """All cited markers map to retrieved chunks → unmatched_citations is empty."""
+        store = _make_store(
+            ("Net sales were $383 billion.", "acc-0#Item 7#0"),
+        )
+        stub = StubProvider("Net sales were $383B [c1].")
+        result = answer_question("Revenue?", store, provider=stub, k=1)
+        assert "c1" in result.citations
+        assert result.unmatched_citations == []
+
+    def test_unmatched_citations_deduplicated_in_order(self) -> None:
+        """Repeated hallucinated marker appears only once in unmatched_citations."""
+        store = _make_store(
+            ("Passage A.", "acc-0#Item 7#0"),
+        )
+        # [c9] appears twice in the answer — should appear once in unmatched_citations
+        stub = StubProvider("Claim one [c9]. Claim two [c9].")
+        result = answer_question("Revenue?", store, provider=stub, k=1)
+        assert result.unmatched_citations == ["c9"]
+
 
 # ---------------------------------------------------------------------------
 # End-to-end offline — real OfflineProvider (no key, no network)

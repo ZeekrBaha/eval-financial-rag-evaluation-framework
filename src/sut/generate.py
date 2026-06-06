@@ -24,12 +24,15 @@ from dataclasses import dataclass, field
 
 from src.config import RETRIEVAL_K
 from src.sut.prompts import SYSTEM_PROMPT, build_context_block, build_user_prompt
-from src.sut.providers import get_provider
+from src.sut.providers import Provider, get_provider
 from src.sut.retrieve import retrieve
 from src.sut.store import RetrievedChunk, VectorStore
 
-# Pattern matching inline citation markers: [c1], [c2], [c10], etc.
-_CITATION_RE = re.compile(r"\[c(\d+)\]")
+# Regex pattern for inline citation markers: [c1], [c2], [c10], etc.
+# Defined once here so both the parser and any prompt-building logic share the same format.
+CITATION_MARKER_PATTERN: str = r"\[c(\d+)\]"
+
+_CITATION_RE = re.compile(CITATION_MARKER_PATTERN)
 
 
 # ---------------------------------------------------------------------------
@@ -42,22 +45,34 @@ class Answer:
     """Result of a single answer_question() call.
 
     Attributes:
-        answer:    The model's answer text, verbatim from provider.generate().
-                   May be a factual response with [cN] markers, or a refusal
-                   phrase if the context did not support an answer.
-        citations: Mapping from marker key to chunk_id for every [cN] marker
-                   that actually appears in ``answer``. Markers referenced by
-                   the model but absent from the context block are silently
-                   omitted (they won't be in the marker_map). Empty when the
-                   model issues a refusal or cites nothing.
-        retrieved: The list of RetrievedChunk objects returned by retrieve(),
-                   in retrieval order (closest first). These are the raw
-                   passages the model was given as context.
+        answer:              The model's answer text, verbatim from provider.generate().
+                             May be a factual response with [cN] markers, or a refusal
+                             phrase if the context did not support an answer.
+        citations:           Mapping from marker key to chunk_id for every [cN] marker
+                             that appears in ``answer`` AND maps to a retrieved passage.
+                             Empty when the model issues a refusal or cites nothing.
+        retrieved:           The list of RetrievedChunk objects returned by retrieve(),
+                             in retrieval order (closest first). These are the raw
+                             passages the model was given as context.
+        unmatched_citations: Markers that appear in the answer text but do NOT map to
+                             any retrieved context passage (i.e. the model cited a
+                             passage that wasn't provided — over-citation / hallucinated
+                             citation). Deduplicated, in order of first appearance.
+                             Non-empty values allow T10 to flag over-citation instead of
+                             having it laundered away silently.
     """
 
     answer: str
     citations: dict[str, str] = field(default_factory=dict)
     retrieved: list[RetrievedChunk] = field(default_factory=list)
+    unmatched_citations: list[str] = field(default_factory=list)
+    """Markers that appear in the answer text but do NOT map to any retrieved context passage.
+
+    A non-empty list indicates the model cited a passage that was not provided —
+    i.e. over-citation / hallucinated citation.  Captured here so the downstream
+    T10 citation-validity metric can flag over-citation rather than having it
+    silently discarded.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +83,7 @@ class Answer:
 def answer_question(
     question: str,
     store: VectorStore,
-    provider: object | None = None,
+    provider: Provider | None = None,
     k: int = RETRIEVAL_K,
 ) -> Answer:
     """Retrieve context, generate an answer, and parse citations.
@@ -110,23 +125,31 @@ def answer_question(
 
     # --- Step 4: Generate ---
     resolved_provider = provider if provider is not None else get_provider()
-    answer_text: str = resolved_provider.generate(  # type: ignore[union-attr]
+    answer_text: str = resolved_provider.generate(
         user_prompt,
         system=SYSTEM_PROMPT,
     )
 
     # --- Step 5: Parse citations ---
-    # Find all [cN] markers that appear in the answer text.
-    used_markers = _CITATION_RE.findall(answer_text)  # returns ["1", "2", ...]
+    # Find all [cN] markers that appear in the answer text, in order of appearance.
+    # Split into matched (marker exists in marker_map) and unmatched (hallucinated/out-of-range).
+    # Deduplicate while preserving first-appearance order.
     citations: dict[str, str] = {}
-    for num in used_markers:
+    unmatched_citations: list[str] = []
+    seen_unmatched: set[str] = set()
+
+    for num in _CITATION_RE.findall(answer_text):  # returns ["1", "2", ...]
         marker_key = f"c{num}"
         if marker_key in marker_map:
             citations[marker_key] = marker_map[marker_key]
+        elif marker_key not in seen_unmatched:
+            unmatched_citations.append(marker_key)
+            seen_unmatched.add(marker_key)
 
     # --- Step 6: Return ---
     return Answer(
         answer=answer_text,
         citations=citations,
         retrieved=chunks,
+        unmatched_citations=unmatched_citations,
     )
