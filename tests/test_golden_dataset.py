@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -47,7 +48,7 @@ MIN_PER_BUCKET = 3
 # ---------------------------------------------------------------------------
 
 
-def load_run_jsonl(path: Path) -> list[dict]:
+def load_run_jsonl(path: Path) -> list[dict[str, Any]]:
     """Load a run JSONL file and return a list of row dicts."""
     rows = []
     with path.open() as fh:

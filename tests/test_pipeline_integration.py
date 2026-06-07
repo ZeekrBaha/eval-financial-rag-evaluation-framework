@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 from contextlib import redirect_stdout
+from pathlib import Path
 
 from src.eval.aggregate import build_scorecard
 from src.eval.golden import load_goldens
@@ -32,7 +33,7 @@ JUDGE_FAIL = "datasets/fixtures/judge_fail.json"
 # --- metric_summary covers all gate metrics -------------------------------
 
 
-def test_metric_summary_includes_judge_gate_metrics(tmp_path):
+def test_metric_summary_includes_judge_gate_metrics(tmp_path: Path) -> None:
     """hallucination_rate and answer_relevance must reach metric_summary so the
     gates can read them (regression for the dimension-only metric_summary bug)."""
     goldens = load_goldens(GOLDEN)
@@ -59,7 +60,7 @@ def test_metric_summary_includes_judge_gate_metrics(tmp_path):
 # --- full PASS -------------------------------------------------------------
 
 
-def test_full_gate_run_pass_is_pass(tmp_path):
+def test_full_gate_run_pass_is_pass(tmp_path: Path) -> None:
     out = io.StringIO()
     with redirect_stdout(out):
         code = main([
@@ -76,7 +77,7 @@ def test_full_gate_run_pass_is_pass(tmp_path):
 # --- full BLOCKED ----------------------------------------------------------
 
 
-def test_full_gate_run_fail_is_blocked(tmp_path):
+def test_full_gate_run_fail_is_blocked(tmp_path: Path) -> None:
     out = io.StringIO()
     with redirect_stdout(out):
         code = main([
@@ -95,7 +96,7 @@ def test_full_gate_run_fail_is_blocked(tmp_path):
 # --- INCOMPLETE (no verdicts) ---------------------------------------------
 
 
-def test_no_verdicts_is_incomplete(tmp_path):
+def test_no_verdicts_is_incomplete(tmp_path: Path) -> None:
     out = io.StringIO()
     with redirect_stdout(out):
         code = main([

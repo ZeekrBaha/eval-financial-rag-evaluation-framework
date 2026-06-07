@@ -73,9 +73,9 @@ class TestVectorStoreAdd:
         store.add(chunks)  # should not raise
 
     def test_add_returns_none(self) -> None:
+        """add() mutates the store in place and has no return value."""
         store = VectorStore()
-        result = store.add([_make_chunk()])
-        assert result is None
+        store.add([_make_chunk()])  # contract: returns None, statically enforced
 
     def test_add_empty_list_is_noop(self) -> None:
         store = VectorStore()

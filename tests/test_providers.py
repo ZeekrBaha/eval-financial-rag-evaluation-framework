@@ -15,6 +15,7 @@ from src.sut.providers import (
     OfflineProvider,
     LiveProvider,
     get_provider,
+    get_judge_provider,
     fixture_key,
 )
 
@@ -130,14 +131,14 @@ class TestOfflineNoNetwork:
 
     def test_offline_embed_does_not_import_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Patch sys.modules so any openai import would raise ImportError."""
-        monkeypatch.setitem(sys.modules, "openai", None)  # type: ignore[arg-type]
+        monkeypatch.setitem(sys.modules, "openai", None)
         provider = OfflineProvider()
         # Must not raise despite openai being "unavailable"
         result = provider.embed(["test text"])
         assert len(result[0]) == 384
 
     def test_offline_generate_does_not_import_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setitem(sys.modules, "openai", None)  # type: ignore[arg-type]
+        monkeypatch.setitem(sys.modules, "openai", None)
         provider = OfflineProvider()
         result = provider.generate("some prompt")
         assert isinstance(result, str)
@@ -172,6 +173,17 @@ class TestGetProvider:
     def test_unknown_mode_raises(self) -> None:
         with pytest.raises(ValueError, match="unknown"):
             get_provider(mode="bogus")
+
+    def test_judge_provider_uses_separate_model(self) -> None:
+        """get_judge_provider() is a LiveProvider pinned to JUDGE_CHAT_MODEL — a
+        different (stronger) model than the SUT generator, to cut self-preference."""
+        from src.config import JUDGE_CHAT_MODEL, LIVE_CHAT_MODEL
+
+        judge = get_judge_provider()
+        assert isinstance(judge, LiveProvider)
+        assert judge.model == JUDGE_CHAT_MODEL
+        # Default config ships a distinct judge vs SUT model.
+        assert JUDGE_CHAT_MODEL != LIVE_CHAT_MODEL
 
 
 # ---------------------------------------------------------------------------

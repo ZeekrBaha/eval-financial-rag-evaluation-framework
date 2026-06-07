@@ -63,19 +63,16 @@ def scorecard_run_pass() -> Scorecard:
 
 
 class TestMetricDimensionMapping:
-    def test_all_7_dimensions_present_in_scorecard(self) -> None:
-        """All 7 DIMENSION_WEIGHTS keys must appear as Scorecard dimensions.
+    def test_metric_dimension_covers_all_dimensions(self) -> None:
+        """Every DIMENSION_WEIGHTS key must be a target of the METRIC_DIMENSION map.
 
-        business_value intentionally has no offline metric in METRIC_DIMENSION
-        (it is always NA), but it still appears as a Dimension in the Scorecard.
-        This test checks that the Scorecard covers all 7 dims, not the mapping.
+        After business_value was removed, every weighted dimension has at least
+        one metric mapped to it, so the set of mapping targets equals the set of
+        configured dimensions exactly.
         """
         from src.config import DIMENSION_WEIGHTS
-        # METRIC_DIMENSION covers 6 dims (business_value has no offline metric).
-        # All 7 must appear in the built scorecard — checked in TestDimensionScores.
         dims_in_mapping = set(METRIC_DIMENSION.values())
-        expected_without_bv = set(DIMENSION_WEIGHTS.keys()) - {"business_value"}
-        assert dims_in_mapping == expected_without_bv
+        assert dims_in_mapping == set(DIMENSION_WEIGHTS.keys())
 
     def test_citation_validity_in_faithfulness_grounding(self) -> None:
         assert METRIC_DIMENSION["citation_validity"] == "faithfulness_grounding"
@@ -143,13 +140,7 @@ class TestDimensionScores:
         assert dim.score is None
         assert dim.status == "na"
 
-    def test_business_value_is_na(self, scorecard_run_pass: Scorecard) -> None:
-        """business_value has no offline metrics → always NA."""
-        dim = next(d for d in scorecard_run_pass.dimensions if d.name == "business_value")
-        assert dim.score is None
-        assert dim.status == "na"
-
-    def test_all_7_dimensions_present(self, scorecard_run_pass: Scorecard) -> None:
+    def test_all_dimensions_present(self, scorecard_run_pass: Scorecard) -> None:
         from src.config import DIMENSION_WEIGHTS
         names = {d.name for d in scorecard_run_pass.dimensions}
         assert names == set(DIMENSION_WEIGHTS.keys())
@@ -166,14 +157,15 @@ class TestOverallScore:
 
     def test_overall_computed_over_non_na_dims_only(self, scorecard_run_pass: Scorecard) -> None:
         """
-        Non-NA dims in run_pass: faithfulness_grounding(25), retrieval_quality(20),
-        financial_correctness(20), safety_compliance(15). Total weight = 80.
-        Renormalized weights: fg=25/80, rq=20/80, fc=20/80, sc=15/80.
-        Expected: (100*25 + 95.833*20 + 100*20 + 100*15) / 80 ≈ 98.958.
+        Non-NA dims in run_pass: faithfulness_grounding(30), retrieval_quality(20),
+        financial_correctness(20), safety_compliance(15). Total weight = 85.
+        Renormalized weights: fg=30/85, rq=20/85, fc=20/85, sc=15/85.
+        Expected: (100*30 + 95.833*20 + 100*20 + 100*15) / 85 ≈ 99.02.
         """
-        assert scorecard_run_pass.overall == pytest.approx(98.958, abs=0.1)
+        assert scorecard_run_pass.overall == pytest.approx(99.02, abs=0.1)
 
     def test_overall_is_in_0_100_range(self, scorecard_run_pass: Scorecard) -> None:
+        assert scorecard_run_pass.overall is not None
         assert 0.0 <= scorecard_run_pass.overall <= 100.0
 
     def test_scorecard_has_run_id(self, scorecard_run_pass: Scorecard) -> None:

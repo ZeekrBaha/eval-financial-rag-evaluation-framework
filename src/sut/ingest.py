@@ -299,12 +299,14 @@ def parse_and_chunk(text: str, meta: dict[str, str]) -> list[Chunk]:
 
     # Guarantee uniqueness: _split_into_sections ensures unique slugs, and
     # _chunk_words restarts idx per section, so collisions should be impossible.
-    # Assert here as a hard invariant so regressions are caught immediately.
+    # Enforce as a hard invariant with an explicit exception (not assert, which
+    # `python -O` strips) so a regression always fails loudly in any runtime.
     ids = [c.chunk_id for c in chunks]
-    assert len(ids) == len(set(ids)), (
-        f"BUG: duplicate chunk_ids produced for accession={accession!r}: "
-        f"{[cid for cid in ids if ids.count(cid) > 1]}"
-    )
+    if len(ids) != len(set(ids)):
+        dupes = sorted({cid for cid in ids if ids.count(cid) > 1})
+        raise ValueError(
+            f"duplicate chunk_ids produced for accession={accession!r}: {dupes}"
+        )
 
     return chunks
 
@@ -372,10 +374,77 @@ def ingest_fixture(
 # ---------------------------------------------------------------------------
 
 
+def _complete_submission_url(cik: str, accession: str) -> str:
+    """Build the EDGAR complete-submission .txt URL for *cik* / *accession*.
+
+    SEC convention: the accession DIRECTORY has dashes stripped, but the .txt
+    FILENAME retains the dashed accession number, e.g.
+        /Archives/edgar/data/1122304/000119312515118890/0001193125-15-118890.txt
+    See https://www.sec.gov/edgar/searchedgar/accessing-edgar-data.htm.
+    """
+    accession_nodash = accession.replace("-", "")
+    return (
+        f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/"
+        f"{accession_nodash}/{accession}.txt"
+    )
+
+
+def resolve_latest_accession(cik: str, form: str = "10-K") -> tuple[str, str]:
+    """Resolve the most recent (accession, filing_date) for *cik* / *form*.
+
+    Queries the SEC submissions API
+    (``https://data.sec.gov/submissions/CIK##########.json``), which lists recent
+    filings as parallel arrays ordered newest-first. Returns the first entry whose
+    form matches *form*. Requires network access; NOT called in offline tests.
+
+    Args:
+        cik:  SEC Central Index Key (zero-padding is applied automatically).
+        form: Form type to match (e.g. "10-K" or "10-Q").
+
+    Returns:
+        (accession_number, filing_date) for the most recent matching filing.
+
+    Raises:
+        LookupError: if no filing of *form* is found for the CIK.
+    """
+    import time  # noqa: PLC0415
+
+    try:
+        import requests  # noqa: PLC0415
+    except ImportError as exc:
+        raise ImportError(
+            "requests is not installed. Install the live extra: uv sync --extra live"
+        ) from exc
+
+    cik10 = cik.zfill(10)
+    url = f"https://data.sec.gov/submissions/CIK{cik10}.json"
+    headers = {"User-Agent": _SEC_USER_AGENT}
+
+    # Polite rate limiting — SEC requests ≤ 10 req/s.
+    time.sleep(_SEC_RATE_LIMIT_SLEEP)
+    response = requests.get(url, headers=headers, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+
+    recent = data.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    accessions = recent.get("accessionNumber", [])
+    dates = recent.get("filingDate", [])
+
+    for i, candidate_form in enumerate(forms):
+        if candidate_form == form and i < len(accessions):
+            filing_date = dates[i] if i < len(dates) else ""
+            return accessions[i], filing_date
+
+    raise LookupError(
+        f"no {form!r} filing found for CIK {cik10} in the SEC submissions feed"
+    )
+
+
 def fetch_filing(
     cik: str,
-    accession: str,
     store: "VectorStore",
+    accession: str = "",
     form: str = "10-K",
     issuer: str = "",
     filing_date: str = "",
@@ -388,7 +457,9 @@ def fetch_filing(
 
     Args:
         cik:         SEC Central Index Key (zero-padded, e.g. "0000320193").
-        accession:   Accession number (e.g. "0000320193-24-000123").
+        accession:   Accession number (e.g. "0000320193-24-000123"). When empty,
+                     the most recent filing of *form* is resolved automatically
+                     via resolve_latest_accession().
         store:       VectorStore to ingest into.
         form:        Form type label ("10-K" or "10-Q").
         issuer:      Ticker or name (used as metadata).
@@ -404,8 +475,15 @@ def fetch_filing(
         import requests  # noqa: PLC0415
     except ImportError as exc:
         raise ImportError(
-            "requests is not installed. Install with: uv add requests"
+            "requests is not installed. Install the live extra: uv sync --extra live"
         ) from exc
+
+    # Resolve the latest filing when no explicit accession is supplied. This is
+    # what makes the issuers.yaml entries (which carry no accession) usable.
+    if not accession:
+        accession, latest_date = resolve_latest_accession(cik, form)
+        if not filing_date:
+            filing_date = latest_date
 
     # Build cache path
     _RAW_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -414,13 +492,11 @@ def fetch_filing(
     if cache_file.exists():
         text = cache_file.read_text(encoding="utf-8")
     else:
-        # Construct the direct document URL.
-        # Accession number format: XXXXXXXXXX-YY-ZZZZZZ → XXXXXXXXXXYYYZZZZZZ (no dashes)
-        accession_nodash = accession.replace("-", "")
-        filing_url = (
-            f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/"
-            f"{accession_nodash}/{accession_nodash}.txt"
-        )
+        # Construct the complete-submission URL. SEC format: the accession
+        # DIRECTORY drops the dashes, but the .txt FILENAME keeps them, e.g.
+        #   /Archives/edgar/data/1122304/000119312515118890/0001193125-15-118890.txt
+        # (see https://www.sec.gov/edgar/searchedgar/accessing-edgar-data.htm).
+        filing_url = _complete_submission_url(cik, accession)
 
         headers = {"User-Agent": _SEC_USER_AGENT}
 
@@ -434,12 +510,8 @@ def fetch_filing(
         # Cache the raw download
         cache_file.write_text(text, encoding="utf-8")
 
-    # Build source_url from the same no-dash accession (reuse if already computed).
-    _nodash = accession.replace("-", "")
-    source_url = (
-        f"https://www.sec.gov/Archives/edgar/data/{cik.lstrip('0')}/"
-        f"{_nodash}/{_nodash}.txt"
-    )
+    # source_url points at the same complete-submission document.
+    source_url = _complete_submission_url(cik, accession)
 
     meta = {
         "issuer": issuer,

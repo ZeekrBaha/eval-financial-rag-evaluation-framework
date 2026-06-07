@@ -71,7 +71,6 @@ def _make_passing_scorecard(run_id: str = "run-pass-001") -> Scorecard:
             ),
             Dimension(name="robustness", weight=10, score=None, status="na", metrics={}),
             Dimension(name="consistency", weight=5, score=None, status="na", metrics={}),
-            Dimension(name="business_value", weight=5, score=None, status="na", metrics={}),
         ],
         buckets={
             "factual_lookup": 1.0,
@@ -149,7 +148,6 @@ def _make_failing_scorecard(run_id: str = "run-fail-001") -> Scorecard:
             Dimension(name="financial_correctness", weight=20, score=None, status="na", metrics={}),
             Dimension(name="robustness", weight=10, score=None, status="na", metrics={}),
             Dimension(name="consistency", weight=5, score=None, status="na", metrics={}),
-            Dimension(name="business_value", weight=5, score=None, status="na", metrics={}),
         ],
         buckets={
             "factual_lookup": 0.0,

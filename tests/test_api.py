@@ -9,6 +9,8 @@ FastAPI dependency_overrides so real ingest or live providers are never used.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -55,14 +57,14 @@ _FIXTURE_CHUNKS = [
 
 
 @pytest.fixture(scope="module")
-def client() -> TestClient:
+def client() -> Iterator[TestClient]:
     """TestClient with dependency override pointing to an ephemeral ingested store."""
     store = VectorStore()
     store.add(_FIXTURE_CHUNKS)
 
     app.dependency_overrides[get_store] = lambda: store
     tc = TestClient(app)
-    yield tc  # type: ignore[misc]
+    yield tc
     app.dependency_overrides.clear()
 
 

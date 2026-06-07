@@ -8,12 +8,15 @@ to prove no network call is made.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+import src.sut.ingest as ingest
 from src.sut.ingest import Chunk, parse_and_chunk, ingest_fixture, ingest_filing
 from src.sut.store import VectorStore
 
@@ -451,3 +454,159 @@ class TestFetchFilingExists:
     def test_fetch_filing_is_importable(self) -> None:
         from src.sut.ingest import fetch_filing
         assert callable(fetch_filing)
+
+
+# ---------------------------------------------------------------------------
+# resolve_latest_accession — SEC submissions resolution (mocked network)
+# ---------------------------------------------------------------------------
+
+
+class _FakeResp:
+    """Minimal stand-in for a requests.Response."""
+
+    def __init__(self, *, json_data: dict[str, Any] | None = None, text: str = "") -> None:
+        self._json = json_data or {}
+        self.text = text
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, Any]:
+        return self._json
+
+
+class TestResolveLatestAccession:
+    def test_picks_newest_matching_form(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Returns the first (newest-first) entry whose form matches."""
+        import requests
+
+        submissions = {
+            "filings": {
+                "recent": {
+                    "form": ["10-Q", "10-K", "10-K"],
+                    "accessionNumber": ["acc-q", "acc-k-new", "acc-k-old"],
+                    "filingDate": ["2024-05-01", "2024-02-01", "2023-02-01"],
+                }
+            }
+        }
+        monkeypatch.setattr(ingest, "_SEC_RATE_LIMIT_SLEEP", 0)
+        monkeypatch.setattr(
+            requests, "get",
+            lambda url, headers=None, timeout=None: _FakeResp(json_data=submissions),
+        )
+
+        accession, filing_date = ingest.resolve_latest_accession("320193", "10-K")
+        assert accession == "acc-k-new"
+        assert filing_date == "2024-02-01"
+
+    def test_raises_when_form_absent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import requests
+
+        submissions = {"filings": {"recent": {
+            "form": ["8-K"], "accessionNumber": ["acc-8k"], "filingDate": ["2024-01-01"],
+        }}}
+        monkeypatch.setattr(ingest, "_SEC_RATE_LIMIT_SLEEP", 0)
+        monkeypatch.setattr(
+            requests, "get",
+            lambda url, headers=None, timeout=None: _FakeResp(json_data=submissions),
+        )
+        with pytest.raises(LookupError):
+            ingest.resolve_latest_accession("320193", "10-K")
+
+
+class TestFetchFilingResolvesLatest:
+    def test_empty_accession_triggers_resolution(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """fetch_filing(accession="") resolves the latest accession before download."""
+        import requests
+
+        calls: dict[str, tuple[str, str]] = {}
+
+        def _fake_resolve(cik: str, form: str = "10-K") -> tuple[str, str]:
+            calls["args"] = (cik, form)
+            return "0000320193-24-000123", "2024-02-01"
+
+        monkeypatch.setattr(ingest, "resolve_latest_accession", _fake_resolve)
+        monkeypatch.setattr(ingest, "_RAW_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(ingest, "_SEC_RATE_LIMIT_SLEEP", 0)
+        monkeypatch.setattr(
+            requests, "get",
+            lambda url, headers=None, timeout=None: _FakeResp(
+                text="Item 1. Business\nApple total net sales were strong."
+            ),
+        )
+        # Avoid touching a real vector store / embeddings — assert the ingest call only.
+        monkeypatch.setattr(ingest, "ingest_filing", lambda text, meta, store: 5)
+
+        # ingest_filing is patched, so the store is never touched — a cast keeps
+        # the type checker happy without standing up a real Chroma store.
+        n = ingest.fetch_filing(
+            cik="320193", store=cast("VectorStore", object()), accession="", form="10-K"
+        )
+
+        assert n == 5
+        assert calls["args"] == ("320193", "10-K")
+
+
+class TestCompleteSubmissionUrl:
+    def test_dir_is_nodash_filename_keeps_dashes(self) -> None:
+        """SEC format: accession DIRECTORY drops dashes, .txt FILENAME keeps them."""
+        url = ingest._complete_submission_url("0000320193", "0000320193-24-000123")
+        assert url == (
+            "https://www.sec.gov/Archives/edgar/data/320193/"
+            "000032019324000123/0000320193-24-000123.txt"
+        )
+
+    def test_fetch_filing_requests_correct_url(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """fetch_filing downloads from the dashed-filename complete-submission URL."""
+        import requests
+
+        seen: dict[str, str] = {}
+
+        def _capture_get(url: str, headers: dict[str, str] | None = None,
+                         timeout: int | None = None) -> _FakeResp:
+            seen["url"] = url
+            return _FakeResp(text="Item 1. Business\nRevenue figures.")
+
+        monkeypatch.setattr(ingest, "_RAW_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(ingest, "_SEC_RATE_LIMIT_SLEEP", 0)
+        monkeypatch.setattr(requests, "get", _capture_get)
+        monkeypatch.setattr(ingest, "ingest_filing", lambda text, meta, store: 1)
+
+        ingest.fetch_filing(
+            cik="0000320193",
+            store=cast("VectorStore", object()),
+            accession="0000320193-24-000123",
+            form="10-K",
+        )
+        assert seen["url"] == (
+            "https://www.sec.gov/Archives/edgar/data/320193/"
+            "000032019324000123/0000320193-24-000123.txt"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Quarantined real-network live ingest — deselected by default (marker `live`).
+# Run with: RUN_LIVE_INGEST=1 uv run pytest -m live
+# Proves the real SEC path (resolve latest → download → section-chunk) works
+# end-to-end; offline CI never executes it.
+# ---------------------------------------------------------------------------
+
+
+class TestLiveSecIngest:
+    @pytest.mark.live
+    @pytest.mark.skipif(
+        not os.environ.get("RUN_LIVE_INGEST"),
+        reason="real SEC network test; set RUN_LIVE_INGEST=1 to run",
+    )
+    def test_real_sec_ingest_resolves_and_chunks(self) -> None:
+        from src.sut.ingest import fetch_filing
+        from src.sut.store import VectorStore
+
+        store = VectorStore()
+        # Apple Inc., latest 10-K — accession resolved live from SEC submissions.
+        n = fetch_filing(cik="0000320193", store=store, form="10-K")
+        assert n > 0, "real SEC ingest should produce at least one chunk"

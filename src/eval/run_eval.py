@@ -203,8 +203,14 @@ def _live_pipeline(
 ) -> int:
     """Live pipeline — requires OPENAI_API_KEY and SEC EDGAR network access.
 
+    Ingests filings, runs the real SUT, then scores the full metric stack —
+    programmatic + robustness + a live LLM judge — so every hard gate
+    (faithfulness, negative_rejection, hallucination_rate, advice_boundary) is
+    evaluated and the run can reach a real PASS/BLOCKED decision, mirroring the
+    replay pipeline. An empty corpus is treated as a hard error, not a warning.
+
     Returns exit code (0 = PASS, 1 = BLOCKED, 2 = INCOMPLETE).
-    Raises SystemExit with a descriptive message if key/network is unavailable.
+    Returns 1 with a descriptive message if key/network/corpus is unavailable.
     """
     try:
         import yaml  # type: ignore[import-untyped]
@@ -218,7 +224,9 @@ def _live_pipeline(
     from src.eval.aggregate import build_scorecard
     from src.eval.gates import enforce
     from src.eval.golden import load_goldens
+    from src.eval.metrics.judge import score_judge
     from src.eval.metrics.programmatic import score_programmatic
+    from src.eval.metrics.robustness import score_robustness
     from src.eval.report import write_report
     from src.eval.runner import run_live, write_run
     from src.eval.scorecard import render_html, render_json, render_text
@@ -243,18 +251,25 @@ def _live_pipeline(
 
         store = VectorStore()
 
-        # Ingest each issuer's filings (best-effort — log failures, keep going)
+        # Ingest each issuer's filings. A single filing failing is non-fatal
+        # (log + keep going), but an empty corpus is fatal: scoring the SUT over
+        # zero filings would yield a meaningless RELEASE decision, so we refuse.
+        total_ingested = 0
         for issuer in issuers_data.get("issuers", []):
             ticker = issuer.get("ticker", "")
             cik = issuer.get("cik", "")
+            # Optional explicit pin; when absent, fetch_filing resolves the latest.
+            accession = issuer.get("accession", "")
+            filing_date = issuer.get("filing_date", "")
             for form in issuer.get("forms", ["10-K"]):
                 try:
-                    fetch_filing(
+                    total_ingested += fetch_filing(
                         cik=cik,
-                        accession="",   # fetch_filing will resolve latest
                         store=store,
+                        accession=accession,
                         form=form,
                         issuer=ticker,
+                        filing_date=filing_date,
                     )
                 except Exception as exc:  # noqa: BLE001
                     log.warning("skipped %s %s: %s", ticker, form, exc)
@@ -263,21 +278,43 @@ def _live_pipeline(
                         file=sys.stderr,
                     )
 
+        if total_ingested == 0:
+            raise RuntimeError(
+                "Live corpus is empty — no filings were ingested. Cannot run a "
+                "release evaluation over an empty corpus. Check network access, "
+                f"the SEC user-agent, and the issuer list in {issuers_path}."
+            )
+        log.info("ingested %d chunks across the corpus", total_ingested)
+
         with timed(log, "run_live"):
             records = run_live(goldens, store)
         log.info("live run produced %d records", len(records))
 
         write_run(records, run_dir / "run.jsonl")
 
+        # Score the full stack so live runs gate on every hard gate, exactly as
+        # the replay pipeline does: programmatic + robustness + a live LLM judge.
         with timed(log, "score_programmatic"):
             prog = score_programmatic(records, goldens)
-        log.info("scored %d programmatic results", len(prog))
+
+        with timed(log, "score_robustness"):
+            rob = score_robustness(records, goldens)
+
+        with timed(log, "score_judge"):
+            judge = score_judge(records, goldens, mode="live")
+
+        log.info(
+            "scored %d programmatic / %d robustness / %d judge results",
+            len(prog), len(rob), len(judge),
+        )
 
         with timed(log, "build_scorecard"):
             sc = build_scorecard(
                 records,
                 goldens,
                 prog_results=prog,
+                judge_results=judge,
+                robustness_results=rob,
                 run_id=run_id,
                 mode="live",
             )
@@ -290,7 +327,8 @@ def _live_pipeline(
         with timed(log, "write_artifacts"):
             render_json(sc, run_dir / "scorecard.json")
             render_html(sc, run_dir / "scorecard.html")
-            write_report(sc, outcome, goldens, prog, run_dir / "REPORT.md")
+            all_metric_results = prog + rob + judge
+            write_report(sc, outcome, goldens, all_metric_results, run_dir / "REPORT.md")
 
         log.info("wrote artifacts to %s", run_dir)
 
