@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -12,14 +13,14 @@ from src.eval.golden import GoldenItem, bucket_counts, load_goldens
 # ---------------------------------------------------------------------------
 
 
-def write_jsonl(path: Path, rows: list[dict]) -> None:
+def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     """Write a list of dicts as JSONL to *path*."""
     with path.open("w") as fh:
         for row in rows:
             fh.write(json.dumps(row) + "\n")
 
 
-VALID_ITEM: dict = {
+VALID_ITEM: dict[str, Any] = {
     "id": "fact-001",
     "bucket": "factual_lookup",
     "question": "What was Apple's total net sales for fiscal 2023?",

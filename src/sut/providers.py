@@ -22,6 +22,8 @@ import random
 from pathlib import Path
 from typing import Protocol
 
+from src.config import JUDGE_CHAT_MODEL, LIVE_CHAT_MODEL, LIVE_EMBED_MODEL
+
 # Default path for fixtures; can be overridden in OfflineProvider constructor.
 _DEFAULT_FIXTURES_PATH = (
     Path(__file__).parent.parent.parent / "datasets" / "fixtures" / "llm.json"
@@ -166,8 +168,22 @@ class LiveProvider:
     Raises a clear error at call time if OPENAI_API_KEY is missing.
     """
 
-    _EMBED_MODEL = "text-embedding-3-small"
-    _CHAT_MODEL = "gpt-4o-mini"
+    def __init__(
+        self,
+        *,
+        chat_model: str | None = None,
+        embed_model: str | None = None,
+    ) -> None:
+        """Model ids default to src/config.py values (env-overridable); a caller
+        (e.g. the LLM judge) may pass a different chat_model to use a separate,
+        stronger grading model than the SUT generator."""
+        self._chat_model = chat_model or LIVE_CHAT_MODEL
+        self._embed_model = embed_model or LIVE_EMBED_MODEL
+
+    @property
+    def model(self) -> str:
+        """Chat model id — exposed so the judge can record which model scored."""
+        return self._chat_model
 
     def _client(self) -> "object":  # returns openai.OpenAI
         try:
@@ -187,10 +203,10 @@ class LiveProvider:
         return openai.OpenAI(api_key=api_key)
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed texts using text-embedding-3-small."""
+        """Embed texts using the configured embedding model (config.LIVE_EMBED_MODEL)."""
         client = self._client()
         response = client.embeddings.create(  # type: ignore[attr-defined]
-            model=self._EMBED_MODEL,
+            model=self._embed_model,
             input=texts,
         )
         return [item.embedding for item in response.data]
@@ -202,7 +218,7 @@ class LiveProvider:
         system: str | None = None,
         temperature: float = 0.0,
     ) -> str:
-        """Generate a completion using gpt-4o-mini."""
+        """Generate a completion using the configured chat model (config.LIVE_CHAT_MODEL)."""
         client = self._client()
         messages: list[dict[str, str]] = []
         if system is not None:
@@ -210,7 +226,7 @@ class LiveProvider:
         messages.append({"role": "user", "content": prompt})
 
         response = client.chat.completions.create(  # type: ignore[attr-defined]
-            model=self._CHAT_MODEL,
+            model=self._chat_model,
             messages=messages,
             temperature=temperature,
         )
@@ -240,3 +256,14 @@ def get_provider(mode: str | None = None) -> OfflineProvider | LiveProvider:
     raise ValueError(
         f"unknown provider mode {resolved!r}; expected 'offline' or 'live'"
     )
+
+
+def get_judge_provider() -> LiveProvider:
+    """Return the live provider used by the LLM-as-judge.
+
+    Distinct from the SUT's get_provider("live"): it is pinned to
+    config.JUDGE_CHAT_MODEL, a separate (stronger) model than the SUT generator,
+    so the judge does not grade output from its own model family — which reduces
+    self-preference bias. Requires OPENAI_API_KEY at call time.
+    """
+    return LiveProvider(chat_model=JUDGE_CHAT_MODEL)

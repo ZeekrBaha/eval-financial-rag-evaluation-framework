@@ -14,11 +14,23 @@ dependencies = [
     "python-dotenv",
 ]
 
+# Live mode (real SEC ingest + live OpenAI SUT/judge) needs these. Kept OUT of
+# the base deps so offline/CI installs stay light and never rely on a transitive
+# requests/openai. Install with: uv sync --extra live
+[project.optional-dependencies]
+live = [
+    "requests",
+    "openai",
+]
+
 [dependency-groups]
 dev = [
     "pytest",
     "ruff",
     "mypy",
+    # Present in dev so the mocked live-mode unit tests can import them.
+    "requests",
+    "openai",
 ]
 
 [build-system]
@@ -31,6 +43,13 @@ packages = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# `live` tests hit the real network (SEC / OpenAI). They are quarantined: the
+# default run deselects them via addopts. Run explicitly with `pytest -m live`
+# (and set RUN_LIVE_INGEST=1 for the SEC ingest test).
+markers = [
+    "live: real-network integration test; deselected by default",
+]
+addopts = "-m 'not live'"
 
 [tool.ruff]
 line-length = 100

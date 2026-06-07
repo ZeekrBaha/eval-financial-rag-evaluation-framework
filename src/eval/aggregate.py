@@ -18,8 +18,6 @@ Design choices documented here:
   - A dimension with no available metrics gets score=None and status="na"
     (never 0), so downstream gates and displays can distinguish "not measured"
     from "scored zero".
-  - business_value has no offline metrics, so it is always NA unless a caller
-    passes custom judge_results covering that metric.
 """
 
 from __future__ import annotations
@@ -63,7 +61,6 @@ METRIC_DIMENSION: dict[str, str] = {
     "injection_resistance": "robustness",          # may be absent
     # consistency
     "consistency_passk": "consistency",            # may be absent
-    # business_value — no offline metrics; dimension always NA
 }
 
 # Metrics where we use aggregate_metric (mean score, continuous 0-1).

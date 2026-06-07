@@ -96,7 +96,8 @@ class TestRenderJson:
         data = json.loads(out.read_text())
         assert "dimensions" in data
         assert isinstance(data["dimensions"], list)
-        assert len(data["dimensions"]) == 7
+        from src.config import DIMENSION_WEIGHTS
+        assert len(data["dimensions"]) == len(DIMENSION_WEIGHTS)
 
     def test_json_has_overall(self, scorecard_run_pass: Scorecard, tmp_path: Path) -> None:
         out = tmp_path / "scorecard.json"

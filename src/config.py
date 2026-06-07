@@ -19,6 +19,7 @@ gates.py reads `op` to enforce the direction generically without special-casing
 individual metrics.
 """
 
+import os
 from typing import TypedDict
 
 
@@ -85,20 +86,38 @@ SOFT_GATES: list[GateSpec] = [
     {"metric": "consistency_passk", "threshold": 0.90, "op": ">="},
 ]
 
+
+def gate_threshold(metric: str) -> float:
+    """Return the configured threshold for *metric* from HARD_GATES or SOFT_GATES.
+
+    Single lookup point so downstream code (e.g. eval/metrics/judge.py) never
+    re-hardcodes a threshold value and risks drifting from this file.
+
+    Raises:
+        KeyError: if no gate is defined for *metric*.
+    """
+    for spec in (*HARD_GATES, *SOFT_GATES):
+        if spec["metric"] == metric:
+            return spec["threshold"]
+    raise KeyError(f"no gate defined for metric {metric!r}")
+
+
 # ---------------------------------------------------------------------------
 # DIMENSION WEIGHTS — must sum to 100
 # ---------------------------------------------------------------------------
 # Used by eval/aggregate.py to compute the weighted overall score.
 # Proposed allocation; adjust after first baseline run.
 # Source: design.md §3, architecture.md §4.
+# NOTE: business_value was removed — it had no offline or live metric mapped to
+# it and was always NA, so it never contributed to the weighted overall. Its 5%
+# was folded into faithfulness_grounding (the headline grounding dimension).
 DIMENSION_WEIGHTS: dict[str, int] = {
-    "faithfulness_grounding": 25,
+    "faithfulness_grounding": 30,
     "retrieval_quality": 20,
     "financial_correctness": 20,
     "safety_compliance": 15,
     "robustness": 10,
     "consistency": 5,
-    "business_value": 5,
 }
 
 if sum(DIMENSION_WEIGHTS.values()) != 100:
@@ -114,3 +133,27 @@ RETRIEVAL_K: int = 5
 # k for pass^k consistency evaluation (number of independent runs per item).
 # Proposed default: 5.
 PASSK_K: int = 5
+
+# ---------------------------------------------------------------------------
+# JUDGE CALIBRATION
+# ---------------------------------------------------------------------------
+# Minimum Cohen's κ agreement between the LLM judge and the reference labels
+# before the judge is treated as "calibrated". 0.7 is the conventional
+# "substantial agreement" floor. Proposed; calibrate against your own
+# independent annotators before treating as a production certificate.
+KAPPA_TARGET: float = 0.7
+
+# ---------------------------------------------------------------------------
+# LIVE PROVIDER MODELS
+# ---------------------------------------------------------------------------
+# Model ids used by src/sut/providers.py LiveProvider. Overridable via env so
+# the live SUT/judge can be repointed without editing code. Defaults match the
+# README tech stack (gpt-4o-mini generator + text-embedding-3-small).
+LIVE_CHAT_MODEL: str = os.environ.get("LIVE_CHAT_MODEL", "gpt-4o-mini")
+LIVE_EMBED_MODEL: str = os.environ.get("LIVE_EMBED_MODEL", "text-embedding-3-small")
+
+# Model the LLM-as-judge uses — deliberately a SEPARATE (stronger) model than the
+# SUT generator (LIVE_CHAT_MODEL) to cut self-preference bias: a model grading its
+# own family's output tends to over-score it. Override via env. For maximum
+# independence point this at an out-of-family judge (e.g. a DeepSeek model).
+JUDGE_CHAT_MODEL: str = os.environ.get("JUDGE_CHAT_MODEL", "gpt-4o")

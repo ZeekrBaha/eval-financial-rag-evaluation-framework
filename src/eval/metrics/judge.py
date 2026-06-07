@@ -35,6 +35,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from src.config import gate_threshold
 from src.eval.golden import GoldenItem
 from src.eval.runner import RunRecord
 
@@ -42,11 +43,12 @@ from src.eval.runner import RunRecord
 from src.eval.metrics.programmatic import MetricResult
 
 # ---------------------------------------------------------------------------
-# Thresholds (mirrored from src/config.py — avoid circular import)
+# Thresholds — sourced from src/config.py (single source of truth, no drift).
+# config.py imports nothing from src.eval, so this is not a circular import.
 # ---------------------------------------------------------------------------
 
-_FAITHFULNESS_PASS = 0.95   # HARD gate: mean faithfulness ≥0.95
-_ANSWER_RELEVANCE_PASS = 0.90  # SOFT gate: mean answer_relevance ≥0.90
+_FAITHFULNESS_PASS = gate_threshold("faithfulness")        # HARD gate: mean ≥0.95
+_ANSWER_RELEVANCE_PASS = gate_threshold("answer_relevance")  # SOFT gate: mean ≥0.90
 # hallucination_rate is a HARD gate: mean ≤0.01; individual item passes iff score==0.0
 
 
@@ -143,8 +145,9 @@ def _score_live(
     with human annotators is established (target κ ≥0.7). See module docstring.
     """
     try:
-        from src.sut.providers import get_provider
-        provider = get_provider("live")
+        from src.sut.providers import get_judge_provider
+        # Separate (stronger) judge model than the SUT — cuts self-preference bias.
+        provider = get_judge_provider()
     except Exception as exc:
         raise RuntimeError(
             "Live judge mode requires a valid provider key. "

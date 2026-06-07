@@ -26,6 +26,8 @@ import sys
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -378,3 +380,109 @@ class TestLoggingAndReport:
         ])
         log_path = tmp_path / "t-log-no-verdicts" / "run.log"
         assert log_path.exists(), "run.log must be written even without verdicts"
+
+
+# ---------------------------------------------------------------------------
+# Live pipeline — mocked SEC ingest + fake live judge provider.
+#
+# The live path needs network + an API key, so we mock its three external
+# touchpoints: fetch_filing (SEC download), VectorStore (Chroma), run_live
+# (the real SUT loop), and get_provider (the live LLM judge). No network, no
+# key. These tests prove the live pipeline now scores the FULL stack
+# (programmatic + robustness + live judge) and therefore reaches a real
+# release decision instead of stalling at INCOMPLETE.
+# ---------------------------------------------------------------------------
+
+
+class _FakeLiveProvider:
+    """Stand-in for the live OpenAI provider — returns a perfect judge verdict."""
+
+    model = "fake-judge-model"
+
+    def generate(self, prompt: str, *, system: str | None = None,
+                 temperature: float = 0.0) -> str:
+        return '{"faithfulness": 1.0, "answer_relevance": 1.0, "hallucination": 0}'
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        return [[0.0] for _ in texts]
+
+
+class _DummyStore:
+    """No-op VectorStore replacement (the SUT loop is mocked, so it is unused)."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+
+def _write_issuers(tmp_path: Path) -> Path:
+    issuers = tmp_path / "issuers.yaml"
+    issuers.write_text(
+        "issuers:\n"
+        "  - ticker: AAPL\n"
+        "    cik: '0000320193'\n"
+        "    forms: ['10-K']\n"
+    )
+    return issuers
+
+
+class TestLivePipeline:
+    def test_live_full_stack_reaches_decision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Live run scores judge + robustness → a real PASS/BLOCKED, not INCOMPLETE."""
+        import src.eval.runner as runner_mod
+        import src.sut.ingest as ingest_mod
+        import src.sut.providers as providers_mod
+        import src.sut.store as store_mod
+        from src.eval.runner import load_replay
+
+        monkeypatch.setattr(ingest_mod, "fetch_filing", lambda *a, **k: 7)
+        monkeypatch.setattr(store_mod, "VectorStore", _DummyStore)
+        monkeypatch.setattr(
+            runner_mod, "run_live",
+            lambda goldens, store, provider=None: load_replay(RUN_PASS),
+        )
+        monkeypatch.setattr(providers_mod, "get_provider", lambda mode=None: _FakeLiveProvider())
+        # The judge calls get_judge_provider() — patch it to the fake too.
+        monkeypatch.setattr(providers_mod, "get_judge_provider", lambda: _FakeLiveProvider())
+
+        issuers = _write_issuers(tmp_path)
+        code, out = _run_main([
+            "--live",
+            "--issuers", str(issuers),
+            "--out", str(tmp_path),
+            "--run-id", "t-live",
+        ])
+
+        # All hard gates evaluated → decided, never INCOMPLETE (exit 2).
+        assert code in (0, 1), f"live run must be decided, not INCOMPLETE; got {code}\n{out}"
+
+        data = json.loads((tmp_path / "t-live" / "scorecard.json").read_text())
+        assert data["mode"] == "live"
+        assert data["status"] in ("PASS", "BLOCKED")
+        # Judge ran (faithfulness scored) and robustness ran (injection_resistance scored).
+        assert data["metric_summary"]["faithfulness"] is not None
+        assert data["metric_summary"]["injection_resistance"] is not None
+        assert (tmp_path / "t-live" / "run.jsonl").exists()
+
+    def test_live_empty_corpus_is_hard_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If no filings ingest (all skipped), the run fails instead of scoring nothing."""
+        import src.sut.ingest as ingest_mod
+        import src.sut.store as store_mod
+
+        monkeypatch.setattr(ingest_mod, "fetch_filing", lambda *a, **k: 0)
+        monkeypatch.setattr(store_mod, "VectorStore", _DummyStore)
+
+        issuers = _write_issuers(tmp_path)
+        code, _ = _run_main([
+            "--live",
+            "--issuers", str(issuers),
+            "--out", str(tmp_path),
+            "--run-id", "t-live-empty",
+        ])
+
+        assert code == 1, "empty corpus must be a hard error (exit 1)"
+        # It fails before scoring, so no scorecard is written.
+        assert not (tmp_path / "t-live-empty" / "scorecard.json").exists()

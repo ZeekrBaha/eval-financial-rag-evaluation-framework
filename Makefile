@@ -1,4 +1,4 @@
-.PHONY: ingest run score eval eval-incomplete demo-block test
+.PHONY: ingest run score eval eval-incomplete demo-block test typecheck lint check calibrate live-ingest-smoke
 
 # Replay + judge-verdict fixtures for `make eval` (override on command line).
 # Defaults → run_pass + judge_pass so the full hard-gate decision is PASS (exit 0).
@@ -41,7 +41,39 @@ run:
 	uv run python -m src.eval.run_eval --live
 
 # ---------------------------------------------------------------------------
+# calibrate — Cohen's κ agreement between the judge and the reference labels
+# (offline, recorded verdicts). Add --live to call the real judge.
+# ---------------------------------------------------------------------------
+calibrate:
+	uv run python -m src.eval.calibrate
+
+# ---------------------------------------------------------------------------
+# live-ingest-smoke — real-network SEC ingest smoke test (quarantined).
+# Requires network access; resolves + downloads + chunks a live filing.
+# ---------------------------------------------------------------------------
+live-ingest-smoke:
+	RUN_LIVE_INGEST=1 uv run pytest -m live -v
+
+# ---------------------------------------------------------------------------
 # test — run the full offline test suite
 # ---------------------------------------------------------------------------
 test:
 	uv run pytest
+
+# ---------------------------------------------------------------------------
+# typecheck — mypy (strict, configured in pyproject.toml) over src AND tests.
+# The whole repo is type-clean, so both are checked.
+# ---------------------------------------------------------------------------
+typecheck:
+	uv run mypy src tests
+
+# ---------------------------------------------------------------------------
+# lint — ruff over the whole repo.
+# ---------------------------------------------------------------------------
+lint:
+	uv run ruff check .
+
+# ---------------------------------------------------------------------------
+# check — the full local gate: lint + typecheck + tests (what CI runs offline).
+# ---------------------------------------------------------------------------
+check: lint typecheck test

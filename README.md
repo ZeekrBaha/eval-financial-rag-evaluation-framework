@@ -2,14 +2,25 @@
 
 > **One sentence:** this repo builds a RAG assistant over **public SEC EDGAR filings** and
 > evaluates it with a hard-gated scorecard — deterministic checks for the things that must be
-> exact (numbers, citations, refusals) plus an **LLM-as-judge that is itself calibrated** against
-> human labels — and **blocks release** when a hard gate fails.
+> exact (numbers, citations, refusals) plus an **LLM-as-judge designed to be calibrated** against
+> human labels (κ calibration is the next milestone — §5/§14) — and **blocks release** when a hard gate fails.
 
-> **Status:** offline pipeline complete and verified — `make eval` (PASS), `make demo-block`
-> (BLOCKED), `make eval-incomplete` (INCOMPLETE) all run with no key/network; 472 tests pass,
-> ruff + mypy clean. Live mode (real SEC ingest + live LLM judge) is implemented but optional.
-> A few items remain `_(target)_`: judge calibration (κ, a separate project), volume-synthesis,
-> and the Streamlit dashboard. Honesty rule: no number appears here unless it was measured.
+> **Status (measured, offline):** the offline pipeline is complete and verified — `make eval`
+> (PASS, exit 0), `make demo-block` (BLOCKED, exit 1), `make eval-incomplete` (INCOMPLETE, exit 2)
+> all run with no key/network; **558 tests pass**, `ruff` + `mypy src tests` (whole-repo) clean (`make check`).
+>
+> **Implemented now:** offline replay pipeline · all programmatic + robustness metrics · the
+> offline (recorded-verdict) judge · the live SUT (SEC ingest → retrieve → generate) · a
+> **live pipeline that scores the full stack** (programmatic + robustness + a live LLM judge), so
+> live runs reach a real PASS/BLOCKED decision rather than a programmatic-only partial · and a
+> **judge-calibration harness** (`make calibrate`) that measures Cohen's κ between the judge and a
+> labeled reference set (shipped κ ≈ 0.78–0.80 — see §5).
+>
+> **Target / not yet wired:** **independent multi-annotator** judge calibration (the shipped κ uses
+> a single-annotator reference set — a smoke test, not a production certificate) · volume-synthesis
+> · the Streamlit dashboard · a golden set at scale (21 scenarios authored today — see §7). Until
+> κ is established against independent annotators, treat the judge's faithfulness/relevance numbers
+> as hypotheses (§5). Honesty rule: no measured number appears here unless a run actually produced it.
 
 > **What this is (and isn't):** a *designed case study* in evaluating a regulated-finance RAG
 > product (inspired by public descriptions of Moody's Research Assistant). **Public data only.**
@@ -116,7 +127,7 @@ Two layers. The programmatic layer needs no API key and runs in CI; the judged l
 
 ---
 
-## 5. The differentiator — hard gates + a calibrated judge
+## 5. The differentiator — hard gates + a smoke-calibrated judge
 
 Two things make this more than a metrics dump:
 
@@ -125,12 +136,31 @@ failure → status `RELEASE BLOCKED` with the reason, and the process **exits no
 weighted total does **not** override a hard-gate failure — in a regulated domain, a high average
 cannot offset a grounding failure. This is the CI gate (§9).
 
-**(b) A judge you can trust.** A judge you haven't measured is a judge you can't trust. The
-faithfulness/relevance numbers come from an LLM judge, so the judge itself must be validated
-against human labels with **Cohen's κ** over a *balanced* (pass + fail) hand-labeled fixture —
-the same method proven in the sibling [hotel-bot harness](../eval-hotel-bot-eval-deepeval). Until
-that calibration lands, **the faithfulness number is reported as a hypothesis, not a verdict**
-(see §14). _(target: judge κ fixture + per-bucket agreement.)_
+**(b) A judge with a measured agreement floor.** A judge you haven't measured is a judge you can't
+trust. The faithfulness/relevance numbers come from an LLM judge, so the judge is checked against
+labels with **Cohen's κ** over a *balanced* (pass + fail) fixture — the same method proven in the
+sibling [hotel-bot harness](../eval-hotel-bot-eval-deepeval).
+
+> **What this is:** **single-annotator smoke calibration** — implemented and runnable, but a
+> sanity check on judge agreement, **not** production-grade judge validation. It tells you the
+> judge is not wildly miscalibrated; it does **not** certify the judge for release decisions. That
+> requires independent multi-annotator labels (see the limit below).
+
+`make calibrate` (`src/eval/calibrate.py`) scores the judge against
+`datasets/judge_calibration_set.jsonl` and reports per-dimension κ vs the `KAPPA_TARGET` (0.7) floor:
+
+```
+  JUDGE CALIBRATION   n=10   mode=offline   κ target=0.7
+  (single-annotator reference baseline — not an independent inter-rater study)
+  faithfulness   κ=0.800   agreement=90%   CALIBRATED
+  hallucination  κ=0.783   agreement=90%   CALIBRATED
+```
+
+**Honest limit:** the reference labels are authored by a **single annotator**, so this κ is a
+*smoke test* of judge agreement, not a production certificate. Real calibration uses ≥2 independent
+annotators on a larger set; the harness is identical — only the label source changes. Until then,
+treat the faithfulness number as a hypothesis (§14). _(target: independent multi-annotator κ +
+per-bucket agreement.)_
 
 > Why a *balanced* fixture: κ needs variance in the human labels. A golden set of expected-correct
 > items is all-pass → κ degenerates to 0 regardless of judge quality. So calibration runs over a
@@ -147,16 +177,15 @@ codes. This is real `make demo-block` output (the failing replay + recorded judg
 ```
   STATUS: BLOCKED   run=demo-block   mode=replay
       Dimension                    Weight   Score  Status
-  🟡  faithfulness_grounding           25    79.8  yellow
+  🟡  faithfulness_grounding           30    80.4  yellow
   🟢  retrieval_quality                20    95.8  green
   🟡  financial_correctness            20    86.8  yellow
-  🔴  safety_compliance                15    66.7  red
-  ⚪  robustness                       10   100.0  green
+  🟡  safety_compliance                15    83.3  yellow
+  🟢  robustness                       10   100.0  green
   ⚪  consistency                        5      —  na
-  ⚪  business_value                     5      —  na
   Buckets: factual_lookup 33% · multi_source 67% · temporal 67% · negative 67%
            · entity 100% · adversarial 100% · long_context 67%
-  Overall: 87.9 / 100
+  Overall: 87.5 / 100
 RELEASE BLOCKED
   - faithfulness: 0.81 fails >= 0.95 (hard gate)
   - negative_rejection: 0.667 fails >= 0.95 (hard gate)
@@ -171,7 +200,7 @@ $ echo $?
 1
 ```
 
-**Weighted overall is 87.9 — but three hard gates failed, so the weighted total does NOT
+**Weighted overall is 87.5 — but three hard gates failed, so the weighted total does NOT
 override. Ship is BLOCKED.** That gating rule is the whole point in a regulated domain.
 
 Three statuses (`src/eval/gates.py`):
@@ -191,8 +220,8 @@ while faithfulness and hallucination were never measured — so it refuses to.
 
 | File | What |
 |------|------|
-| `datasets/golden_set.jsonl` | ≥200 hand-authored scenarios (target 500), each with question, reference answer, `expected_sources`, `numeric_answers`, `must_refuse`, `injection`, `advice_boundary`. Bucket mix below. |
-| `datasets/judge_calibration_set.jsonl` | _(target)_ balanced pass+fail fixture used ONLY to validate the judge (§5) — separate from the goldens for the variance reason. |
+| `datasets/golden_set.jsonl` | **21 hand-authored scenarios today** _(target: ≥200, then 500)_ — each with question, reference answer, `expected_sources`, `numeric_answers`, `must_refuse`, `injection`, `advice_boundary`. The bucket mix below is the **target distribution** authoring scales toward; the current 21 seed the pipeline end-to-end. |
+| `datasets/judge_calibration_set.jsonl` | **10 balanced pass+fail scenarios** (single-annotator reference labels) used ONLY to validate the judge via Cohen's κ (§5) — separate from the goldens for the variance reason. `_(target: independent multi-annotator + scale)_` |
 | `datasets/issuers.yaml` | which issuers/filings to ingest. |
 | `datasets/fixtures/` | offline-mode fixtures (deterministic retrieval + generation + judge). |
 
@@ -283,18 +312,37 @@ make ingest   # = run_eval --live : fetch real SEC filings, run the real SUT, sc
 make run      # same (live)
 ```
 
-### Offline tests (no keys, CI-safe)
+Live mode needs the live extra: `uv sync --extra live` (installs `requests` + `openai`, kept out
+of the base deps). It scores the **full** stack — programmatic + robustness + a **live LLM judge**
+— so a live run reaches the same real PASS/BLOCKED/INCOMPLETE decision the replay path does (the
+judge has only a single-annotator κ baseline — §5).
+
+- **Latest-filing resolution:** `issuers.yaml` carries no accession, so `fetch_filing` resolves the
+  most recent matching filing per issuer/form via the SEC submissions API
+  (`resolve_latest_accession`). Pin a specific filing by adding `accession:`/`filing_date:` to an
+  issuer entry.
+- **Empty corpus is fatal:** if no filings ingest, the run errors out rather than certifying a
+  release it never evaluated.
+- **Separate judge model:** the judge uses `config.JUDGE_CHAT_MODEL` (default `gpt-4o`), distinct
+  from the SUT generator `config.LIVE_CHAT_MODEL` (`gpt-4o-mini`), to cut self-preference bias.
+- **Testing:** the live pipeline is covered offline with mocked SEC + a fake provider; a real
+  network smoke test is quarantined behind `@pytest.mark.live`. Run it with `make live-ingest-smoke`
+  (or `RUN_LIVE_INGEST=1 uv run pytest -m live`). **Verified:** this command was run against live
+  SEC (Apple's latest 10-K) and **passed** — real resolve-latest → download → chunk, end-to-end.
+
+### Offline tests + calibration (no keys, CI-safe)
 
 ```bash
 uv run pytest tests -q                          # unit + integration
 uv run pytest -k "refusal or advice or injection"   # high-value AI-failure paths
+make calibrate                                  # judge κ vs the labeled reference set (offline)
 ```
 
 ### Live (needs a key)
 
 ```bash
-uv run pytest evals -v                  # judged metrics over real SUT output
-uv run python -m src.eval.calibrate     # judge κ over the balanced fixture (target)
+uv run pytest evals -v                          # judged metrics over real SUT output
+uv run python -m src.eval.calibrate --live      # judge κ using the real judge model
 ```
 
 Failures under `pytest evals` are **findings** (the SUT failing a criterion), not harness bugs.
@@ -325,8 +373,14 @@ DeepEval ships `deepeval view` / `deepeval inspect` (no signup). Ragas reports +
 
 | Variable | Used for |
 |----------|----------|
-| `OPENAI_API_KEY` | the **SUT** generator (`gpt-4o-mini`) and embeddings (live mode) |
-| `OPENAI_API_KEY` (judge) | the **judge** (`gpt-4o`, stronger than the generator to cut self-preference bias) |
+| `OPENAI_API_KEY` | the **SUT** generator + embeddings, and the **live judge** (live mode) |
+| `LIVE_CHAT_MODEL` / `LIVE_EMBED_MODEL` | override the SUT generator/embedding model ids (defaults: `gpt-4o-mini` / `text-embedding-3-small`) — see `src/config.py` |
+| `JUDGE_CHAT_MODEL` | override the **judge** model (default: `gpt-4o`) — see `src/config.py` |
+
+> The judge uses a **separate, stronger model** (`JUDGE_CHAT_MODEL`, default `gpt-4o`) than the SUT
+> generator (`LIVE_CHAT_MODEL`, `gpt-4o-mini`) so it does not grade its own model family's output —
+> which reduces self-preference bias. For maximum independence point `JUDGE_CHAT_MODEL` at an
+> out-of-family judge (e.g. the hotel-bot harness's DeepSeek judge).
 
 `.env` is gitignored and never committed; only `.env.example` (empty values) is tracked. Offline
 mode needs none. _(If an out-of-family judge is preferred — as in the hotel-bot harness's DeepSeek
@@ -355,12 +409,12 @@ src/eval/                     THE EVALUATOR
   aggregate.py                dimensions + weights + per-bucket → overall
   gates.py                    HARD-GATE enforcement → exit code (the release decision)
   scorecard.py                JSON + HTML render (design-system tokens)
-  calibrate.py                κ judge-vs-human over the balanced fixture (target)
+  calibrate.py                Cohen's κ judge-vs-reference over the balanced fixture (offline)
 
 src/config.py                 thresholds (proposed gates) + weights + k — single source of truth
 
-datasets/                     issuers.yaml · golden_set.jsonl (≥200)
-                              judge_calibration_set.jsonl (balanced) · fixtures/
+datasets/                     issuers.yaml · golden_set.jsonl (21 today; target ≥200)
+                              judge_calibration_set.jsonl (10, balanced, 1-annotator) · fixtures/
 reports/                      per-run scorecard.{json,html} + suite rollups
 tests/                        OFFLINE unit tests (no key, no network); AI-failure paths explicit
 docs/implementation/          research · requirements · design · design-system · architecture
@@ -389,7 +443,7 @@ deliberately, to show range.
 ## 13. Tech stack
 
 Python 3.12 · **uv** (deps + `uv.lock`) · LlamaIndex (ingest/retrieve) · Chroma (vector store) ·
-OpenAI (`gpt-4o-mini` SUT + `text-embedding-3-small`, `gpt-4o` judge) · Ragas + DeepEval (metrics) ·
+OpenAI (`gpt-4o-mini` SUT + `gpt-4o` judge, `text-embedding-3-small`; model ids env-overridable) · Ragas + DeepEval (metrics) ·
 Promptfoo (regression/CI grid) · FastAPI (query API) · pytest. CI (`.github/workflows/`) runs
 `uv sync --frozen` + the offline suite only — no secrets needed.
 
@@ -397,9 +451,11 @@ Promptfoo (regression/CI grid) · FastAPI (query API) · pytest. CI (`.github/wo
 
 ## 14. Limitations / next steps
 
-- **Offline pipeline is built and verified** (472 tests, ruff+mypy clean); live SEC ingest + live judge are implemented but optional. Remaining `_(target)_`: judge calibration, volume-synthesis, Streamlit dashboard.
-- **Judge not yet calibrated** — faithfulness is judge-scored; until κ is measured against human labels, treat it as a hypothesis (§5). Calibration is also a standalone portfolio project.
-- **Golden set authoring** is the main effort — start at 50 to unblock the pipeline, scale to ≥200, target 500.
+- **Offline pipeline is built and verified** (558 tests, `ruff` + whole-repo `mypy src tests` clean); the live pipeline scores the full stack (programmatic + robustness + live judge) and gates on every hard gate. Remaining `_(target)_`: volume-synthesis, Streamlit dashboard.
+- **Judge calibration is built but single-annotator** — `make calibrate` measures Cohen's κ (shipped κ ≈ 0.78–0.80, both ≥ the 0.7 floor) between the judge and a labeled reference set. The reference labels come from **one annotator**, so this is a smoke test, not a production certificate; the standing `_(target)_` is an **independent multi-annotator** set at scale. Until then the faithfulness number is a hypothesis (§5).
+- **Golden set authoring** is the main effort — **21 scenarios today**; scale to ≥200, target 500. Authoring real SEC-sourced rows (not synthetic) is the gating effort.
+- **Live deps are declared** as an optional extra (`uv sync --extra live` → `requests` + `openai`); offline/CI never pulls them. Live ingest resolves the latest filing per issuer via the SEC submissions API. The real-network ingest path is covered only by a quarantined `@pytest.mark.live` smoke test (`make live-ingest-smoke`); it was run against live SEC and passed, but routine CI exercises the path with mocked SEC + a fake provider.
+- **Packaging uses `packages = ["src"]`** (import root is `src.*`) — intentionally kept flat for this case study; a `src/eval_financial_rag/` layout is the cleaner long-term structure but is deferred to avoid a repo-wide import churn with no functional gain.
 - **No online drift monitoring yet** — re-embed on corpus update + alert on retrieval-recall drop is a documented Phase-3 stretch.
 - **Single SUT config** (`gpt-4o-mini` + Chroma) — swap embeddings/generator/store and re-run freely.
 - **Cost figures** will be estimates from a pricing table + typical token counts, not metered from API responses (same caveat as the hotel-bot harness).

@@ -125,7 +125,7 @@ class TestRunRecord:
                 citations={},
                 unmatched_citations=[],
                 latency_ms=0,
-                mode="invalid_mode",
+                mode="invalid_mode",  # type: ignore[arg-type]  # intentionally invalid
             )
 
     def test_latency_ms_non_negative(self) -> None:

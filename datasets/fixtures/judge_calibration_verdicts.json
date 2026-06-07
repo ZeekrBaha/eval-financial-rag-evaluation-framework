@@ -1,0 +1,12 @@
+{
+  "cal-001": {"faithfulness": 0.98, "answer_relevance": 0.95, "hallucination": 0},
+  "cal-002": {"faithfulness": 0.97, "answer_relevance": 0.93, "hallucination": 0},
+  "cal-003": {"faithfulness": 0.96, "answer_relevance": 0.92, "hallucination": 0},
+  "cal-004": {"faithfulness": 0.97, "answer_relevance": 0.90, "hallucination": 0},
+  "cal-005": {"faithfulness": 0.40, "answer_relevance": 0.60, "hallucination": 1},
+  "cal-006": {"faithfulness": 0.30, "answer_relevance": 0.70, "hallucination": 1},
+  "cal-007": {"faithfulness": 0.85, "answer_relevance": 0.80, "hallucination": 0},
+  "cal-008": {"faithfulness": 0.50, "answer_relevance": 0.85, "hallucination": 1},
+  "cal-009": {"faithfulness": 0.93, "answer_relevance": 0.90, "hallucination": 0},
+  "cal-010": {"faithfulness": 0.99, "answer_relevance": 0.40, "hallucination": 0}
+}
