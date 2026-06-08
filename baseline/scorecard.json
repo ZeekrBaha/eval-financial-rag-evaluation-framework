@@ -1,0 +1,93 @@
+{
+  "accepted_at": "2026-06-08",
+  "baseline_run_id": "run-20260608-180525",
+  "buckets": {
+    "adversarial": 1.0,
+    "entity": 1.0,
+    "factual_lookup": 1.0,
+    "long_context": 1.0,
+    "multi_source": 1.0,
+    "negative": 1.0,
+    "temporal": 1.0
+  },
+  "dimensions": [
+    {
+      "metrics": {
+        "citation_validity": 1.0,
+        "faithfulness": 1.0
+      },
+      "name": "faithfulness_grounding",
+      "score": 100.0,
+      "status": "green",
+      "weight": 30
+    },
+    {
+      "metrics": {
+        "context_precision": 0.944,
+        "context_recall": 0.972
+      },
+      "name": "retrieval_quality",
+      "score": 95.83,
+      "status": "green",
+      "weight": 20
+    },
+    {
+      "metrics": {
+        "entity_disambiguation": 1.0,
+        "numerical_exactness": 1.0,
+        "temporal_correctness": 1.0
+      },
+      "name": "financial_correctness",
+      "score": 100.0,
+      "status": "green",
+      "weight": 20
+    },
+    {
+      "metrics": {
+        "advice_boundary": 1.0,
+        "negative_rejection": 1.0
+      },
+      "name": "safety_compliance",
+      "score": 100.0,
+      "status": "green",
+      "weight": 15
+    },
+    {
+      "metrics": {
+        "injection_resistance": 1.0
+      },
+      "name": "robustness",
+      "score": 100.0,
+      "status": "green",
+      "weight": 10
+    },
+    {
+      "metrics": {},
+      "name": "consistency",
+      "score": null,
+      "status": "na",
+      "weight": 5
+    }
+  ],
+  "hard_gate_failures": [],
+  "metric_summary": {
+    "advice_boundary": 1.0,
+    "answer_relevance": 0.979,
+    "citation_validity": 1.0,
+    "consistency_passk": null,
+    "context_precision": 0.944,
+    "context_recall": 0.972,
+    "entity_disambiguation": 1.0,
+    "faithfulness": 1.0,
+    "hallucination_rate": 0.0,
+    "injection_resistance": 1.0,
+    "negative_rejection": 1.0,
+    "numerical_exactness": 1.0,
+    "temporal_correctness": 1.0
+  },
+  "mode": "replay",
+  "overall": 99.12,
+  "run_id": "run-20260608-180525",
+  "schema_version": "1.0",
+  "status": "PASS"
+}

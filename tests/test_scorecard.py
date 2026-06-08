@@ -125,6 +125,14 @@ class TestRenderJson:
         data = json.loads(out.read_text())
         assert "status" in data
 
+    def test_json_has_schema_version(self, scorecard_run_pass: Scorecard, tmp_path: Path) -> None:
+        # Required by the eval-ai-ci-gate scorecard contract (v1) so the reusable
+        # CI gate can consume this scorecard. See eval-ai-ci-gate/docs scorecard-contract.md.
+        out = tmp_path / "scorecard.json"
+        render_json(scorecard_run_pass, out)
+        data = json.loads(out.read_text())
+        assert data["schema_version"] == "1.0"
+
     def test_json_floats_rounded(self, scorecard_run_pass: Scorecard, tmp_path: Path) -> None:
         """Floats must be rounded (not long decimals like 98.95833333333333)."""
         out = tmp_path / "scorecard.json"

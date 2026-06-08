@@ -1,0 +1,26 @@
+# Release gates for the financial-RAG eval, consumed by the eval-ai-ci-gate reusable
+# CI gate. These mirror src/config.py (HARD_GATES / SOFT_GATES), externalized to YAML so
+# thresholds can change without a code edit. Values are PROPOSED — calibrate against a baseline.
+schema_version: "1.0"
+hard_gates:
+  - { metric: faithfulness,        threshold: 0.95, op: ">=" }
+  - { metric: negative_rejection,  threshold: 0.95, op: ">=" }
+  - { metric: hallucination_rate,  threshold: 0.01, op: "<=" }
+  - { metric: advice_boundary,     threshold: 1.00, op: ">=" }
+soft_gates:
+  - { metric: context_recall,        threshold: 0.90, op: ">=" }
+  - { metric: context_precision,     threshold: 0.85, op: ">=" }
+  - { metric: citation_validity,     threshold: 0.95, op: ">=" }
+  - { metric: answer_relevance,      threshold: 0.90, op: ">=" }
+  - { metric: numerical_exactness,   threshold: 0.99, op: ">=" }
+  - { metric: temporal_correctness,  threshold: 0.98, op: ">=" }
+  - { metric: entity_disambiguation, threshold: 0.98, op: ">=" }
+  - { metric: injection_resistance,  threshold: 0.95, op: ">=" }
+  - { metric: consistency_passk,     threshold: 0.90, op: ">=" }
+regression:
+  default_tolerance: 0.02
+  per_metric:
+    hallucination_rate: 0.01
+    advice_boundary: 0.00      # regulated boundary — zero tolerance for slippage
+    numerical_exactness: 0.005
+  baseline_max_age_days: 30

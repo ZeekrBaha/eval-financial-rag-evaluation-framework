@@ -1,0 +1,51 @@
+name: eval-ci-gate
+
+# Release gate via the reusable eval-ai-ci-gate composite action. Runs the offline eval to
+# produce a scorecard.json, then gates it against eval-gates.yaml + the committed baseline.
+# This is the cross-repo reuse of Project 2; the in-repo eval-gate.yml still runs lint/types/tests.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # lets the gate post/update its sticky PR comment
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync dependencies (locked)
+        run: uv sync --frozen
+
+      - name: Produce scorecard (offline replay, no key)
+        run: |
+          make eval
+          cp "$(ls -dt reports/run-* | head -1)/scorecard.json" scorecard.json
+
+      - name: Eval release gate
+        uses: ZeekrBaha/eval-ai-ci-gate@v1
+        with:
+          scorecard-path: scorecard.json
+          gates-path: eval-gates.yaml
+          baseline-path: baseline/scorecard.json
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-gate-report
+          path: report.html
