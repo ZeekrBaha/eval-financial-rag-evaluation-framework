@@ -119,6 +119,8 @@ def _scorecard_to_dict(scorecard: Scorecard) -> dict[str, Any]:
     }
 
     return {
+        # Contract version for the eval-ai-ci-gate reusable CI gate (scorecard contract v1).
+        "schema_version": "1.0",
         "run_id": scorecard.run_id,
         "mode": scorecard.mode,
         "status": scorecard.status,
