@@ -23,6 +23,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from src.config import gate_threshold
 from src.eval.golden import Bucket, GoldenItem
 from src.eval.runner import RunRecord, RetrievedRef
 
@@ -125,9 +126,10 @@ _REFUSAL_CUES: tuple[str, ...] = (
     "not contain",
 )
 
-# context_recall / context_precision pass thresholds (from config soft gates).
-_RECALL_GATE = 0.90
-_PRECISION_GATE = 0.85
+# context_recall / context_precision pass thresholds — sourced from the
+# src/config.py soft gates (single source of truth, no duplicated values).
+_RECALL_GATE = gate_threshold("context_recall")
+_PRECISION_GATE = gate_threshold("context_precision")
 
 
 def _normalize_number(token: str) -> str:
