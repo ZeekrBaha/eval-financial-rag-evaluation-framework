@@ -221,6 +221,16 @@ def _live_pipeline(
         )
         return 1
 
+    try:
+        import requests
+    except ImportError:
+        print(
+            "ERROR: requests is required for --live mode. "
+            "Install the live extra: uv sync --extra live",
+            file=sys.stderr,
+        )
+        return 1
+
     from src.eval.aggregate import build_scorecard
     from src.eval.gates import enforce
     from src.eval.golden import load_goldens
@@ -271,7 +281,20 @@ def _live_pipeline(
                         issuer=ticker,
                         filing_date=filing_date,
                     )
-                except Exception as exc:  # noqa: BLE001
+                # Only failures fetch_filing can actually raise per-filing:
+                #   requests.RequestException — network/HTTP errors (incl.
+                #     raise_for_status and the submissions JSON decode error),
+                #   LookupError — no matching filing in the submissions feed,
+                #   ValueError — corrupt filing text (duplicate chunk_ids),
+                #   OSError — local raw-cache read/write failures.
+                # Anything else (e.g. a programming bug) propagates and fails
+                # the run via the outer handler instead of degrading the corpus.
+                except (
+                    requests.RequestException,
+                    LookupError,
+                    ValueError,
+                    OSError,
+                ) as exc:
                     log.warning("skipped %s %s: %s", ticker, form, exc)
                     print(
                         f"WARNING: skipped {ticker} {form}: {exc}",

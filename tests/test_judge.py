@@ -331,3 +331,105 @@ def test_score_judge_fail_returns_three_results_per_item() -> None:
 
     results = score_judge(records, goldens, mode="offline", verdicts_path=JUDGE_FAIL)
     assert len(results) == len(records) * 3
+
+
+# ---------------------------------------------------------------------------
+# Live mode error handling: provider/API errors vs malformed judge output
+# ---------------------------------------------------------------------------
+
+
+class _StaticJudgeProvider:
+    """Fake judge provider that returns a fixed raw string (no network)."""
+
+    model = "fake-judge-model"
+
+    def __init__(self, raw: str) -> None:
+        self._raw = raw
+
+    def generate(
+        self, prompt: str, *, system: str | None = None, temperature: float = 0.0
+    ) -> str:
+        return self._raw
+
+
+class _RaisingJudgeProvider:
+    """Fake judge provider whose API call always fails (no network)."""
+
+    model = "fake-judge-model"
+
+    def generate(
+        self, prompt: str, *, system: str | None = None, temperature: float = 0.0
+    ) -> str:
+        raise ConnectionError("simulated provider outage")
+
+
+def test_live_judge_invalid_json_reports_malformed_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Judge returning non-JSON → malformed-output error naming the record id,
+    NOT the API-call error message."""
+    import src.sut.providers as providers_mod
+
+    monkeypatch.setattr(
+        providers_mod,
+        "get_judge_provider",
+        lambda: _StaticJudgeProvider("sorry, I cannot answer in JSON"),
+    )
+
+    record = _make_record("live-bad-json")
+    golden = _make_golden("live-bad-json")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        score_judge([record], [golden], mode="live")
+
+    msg = str(exc_info.value)
+    assert "malformed" in msg
+    assert "live-bad-json" in msg
+    assert "Judge model call failed" not in msg
+
+
+def test_live_judge_missing_verdict_field_reports_malformed_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Judge returning valid JSON missing a verdict field → malformed-output error."""
+    import src.sut.providers as providers_mod
+
+    monkeypatch.setattr(
+        providers_mod,
+        "get_judge_provider",
+        lambda: _StaticJudgeProvider('{"faithfulness": 1.0}'),
+    )
+
+    record = _make_record("live-missing-field")
+    golden = _make_golden("live-missing-field")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        score_judge([record], [golden], mode="live")
+
+    msg = str(exc_info.value)
+    assert "malformed" in msg
+    assert "live-missing-field" in msg
+    assert "Judge model call failed" not in msg
+
+
+def test_live_judge_provider_error_reports_api_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Provider raising during the API call → API-error message naming the record id."""
+    import src.sut.providers as providers_mod
+
+    monkeypatch.setattr(
+        providers_mod, "get_judge_provider", lambda: _RaisingJudgeProvider()
+    )
+
+    record = _make_record("live-api-down")
+    golden = _make_golden("live-api-down")
+
+    with pytest.raises(RuntimeError) as exc_info:
+        score_judge([record], [golden], mode="live")
+
+    msg = str(exc_info.value)
+    assert "Judge model call failed" in msg
+    assert "live-api-down" in msg
+    assert "malformed" not in msg
+    assert isinstance(exc_info.value.__cause__, ConnectionError)

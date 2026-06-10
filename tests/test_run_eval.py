@@ -486,3 +486,83 @@ class TestLivePipeline:
         assert code == 1, "empty corpus must be a hard error (exit 1)"
         # It fails before scoring, so no scorecard is written.
         assert not (tmp_path / "t-live-empty" / "scorecard.json").exists()
+
+    def test_live_ingest_network_error_skips_filing_and_continues(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A requests.RequestException for one filing is skipped; the run continues."""
+        import requests
+
+        import src.eval.runner as runner_mod
+        import src.sut.ingest as ingest_mod
+        import src.sut.providers as providers_mod
+        import src.sut.store as store_mod
+        from src.eval.runner import load_replay
+
+        def _fetch(*args: object, **kwargs: object) -> int:
+            if kwargs.get("issuer") == "AAPL":
+                raise requests.RequestException("simulated SEC outage")
+            return 7
+
+        monkeypatch.setattr(ingest_mod, "fetch_filing", _fetch)
+        monkeypatch.setattr(store_mod, "VectorStore", _DummyStore)
+        monkeypatch.setattr(
+            runner_mod, "run_live",
+            lambda goldens, store, provider=None: load_replay(RUN_PASS),
+        )
+        monkeypatch.setattr(providers_mod, "get_judge_provider", lambda: _FakeLiveProvider())
+
+        issuers = tmp_path / "issuers.yaml"
+        issuers.write_text(
+            "issuers:\n"
+            "  - ticker: AAPL\n"
+            "    cik: '0000320193'\n"
+            "    forms: ['10-K']\n"
+            "  - ticker: MSFT\n"
+            "    cik: '0000789019'\n"
+            "    forms: ['10-K']\n"
+        )
+        code, _ = _run_main([
+            "--live",
+            "--issuers", str(issuers),
+            "--out", str(tmp_path),
+            "--run-id", "t-live-skip",
+        ])
+
+        # The failed AAPL filing is skipped with a warning; MSFT still ingests,
+        # so the run survives and reaches a real decision.
+        assert code in (0, 1), f"run must survive a single failed filing; got {code}"
+        stderr = capsys.readouterr().err
+        assert "skipped AAPL 10-K" in stderr
+        assert (tmp_path / "t-live-skip" / "scorecard.json").exists()
+
+    def test_live_ingest_programming_error_is_not_swallowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A non-ingest error (e.g. TypeError bug) must NOT be skipped per-filing —
+        it fails the run instead of silently degrading the corpus."""
+        import src.sut.ingest as ingest_mod
+        import src.sut.store as store_mod
+
+        def _fetch(*args: object, **kwargs: object) -> int:
+            raise TypeError("simulated programming bug")
+
+        monkeypatch.setattr(ingest_mod, "fetch_filing", _fetch)
+        monkeypatch.setattr(store_mod, "VectorStore", _DummyStore)
+
+        issuers = _write_issuers(tmp_path)
+        code, _ = _run_main([
+            "--live",
+            "--issuers", str(issuers),
+            "--out", str(tmp_path),
+            "--run-id", "t-live-bug",
+        ])
+
+        assert code == 1
+        stderr = capsys.readouterr().err
+        # Failed as a pipeline error, not skipped as a per-filing ingest warning.
+        assert "skipped" not in stderr
+        assert "Live pipeline failed" in stderr
+        assert not (tmp_path / "t-live-bug" / "scorecard.json").exists()

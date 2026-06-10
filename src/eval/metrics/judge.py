@@ -176,20 +176,35 @@ def _score_live(
             '{"faithfulness": <float>, "answer_relevance": <float>, "hallucination": <0|1>}'
         )
 
+        # Provider/API call errors. The provider surface is not well-typed:
+        # LiveProvider.generate can raise ImportError, RuntimeError (missing
+        # key), or any openai SDK exception (lazy-imported, optional package),
+        # so Exception is the honest catch — for the API call ONLY.
         try:
             raw = provider.generate(judge_prompt)
-            verdict = json.loads(raw)
         except Exception as exc:
             raise RuntimeError(
                 f"Judge model call failed for item id={record.id!r}: {exc}. "
                 "Check provider configuration and API key."
             ) from exc
 
+        # Malformed judge output: invalid JSON (JSONDecodeError), non-object
+        # JSON (TypeError), missing verdict field (KeyError), or a field that
+        # cannot coerce to float/int (ValueError/TypeError).
+        try:
+            verdict = json.loads(raw)
+            faith_score = float(verdict["faithfulness"])
+            ar_score = float(verdict["answer_relevance"])
+            halluc_flag = int(verdict["hallucination"])
+        except (json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
+            raise RuntimeError(
+                f"Judge returned malformed output for item id={record.id!r}: "
+                f"{exc!r}. Raw output: {raw!r}. Expected JSON with keys "
+                "faithfulness, answer_relevance, hallucination."
+            ) from exc
+
         judge_note = f"judge_model={getattr(provider, 'model', 'unknown')}; UNCALIBRATED"
 
-        faith_score = float(verdict["faithfulness"])
-        ar_score = float(verdict["answer_relevance"])
-        halluc_flag = int(verdict["hallucination"])
         halluc_score = float(halluc_flag)
 
         results.append(MetricResult(
@@ -257,7 +272,8 @@ def score_judge(
 
     Raises:
         ValueError: (offline) If a record id is missing from the verdict fixture.
-        RuntimeError: (live) If the judge model call fails.
+        RuntimeError: (live) If the judge model call fails, or the judge
+            returns malformed output (invalid JSON / missing verdict fields).
     """
     if mode == "offline":
         if verdicts_path is None:
